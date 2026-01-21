@@ -12,6 +12,7 @@ import time
 import google.generativeai as genai
 from PIL import Image
 from streamlit_cropper import st_cropper
+import matplotlib.pyplot as plt
 
 # ==========================================
 # 0. 전역 상수 설정
@@ -512,6 +513,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
