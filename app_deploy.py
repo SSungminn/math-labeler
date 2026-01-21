@@ -340,7 +340,27 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
             concept = r2c3.selectbox("핵심 개념", OPTIONS['concepts'], index=get_index_or_default(OPTIONS['concepts'], pred_concept))
             
             st.markdown("---")
-            prob_text = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=200)
+            
+            st.markdown("#### 📝 문제 내용 편집 & 미리보기")
+            
+            col_edit, col_preview = st.columns(2)
+            
+            with col_edit:
+                st.caption("왼쪽에서 수정하면 오른쪽에서 렌더링됩니다.")
+                # height를 좀 더 늘려서 편집하기 편하게 함
+                prob_text = st.text_area("문제 (LaTeX 원본)", value=item.get('problem_text', ""), height=300)
+                
+            with col_preview:
+                st.caption("👁️ 렌더링 미리보기 (LaTex 적용됨)")
+                # 여기가 핵심: st.markdown은 LaTeX($...$)를 자동으로 렌더링함
+                if prob_text:
+                    container = st.container(border=True)
+                    container.markdown(prob_text)
+                else:
+                    st.info("왼쪽에 텍스트가 없습니다.")
+
+            # 도형 설명은 보통 텍스트이므로 그대로 유지
+            diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80)
             diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=100)
             
             if st.form_submit_button("🔥 저장 및 파일 이동"):
@@ -385,3 +405,4 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
