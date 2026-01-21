@@ -202,7 +202,7 @@ def extract_gemini(image, options_dict):
         - 한글 폰트 문제는 피하기 위해 라벨은 영어나 수식($...$)만 사용하세요.
         - JSON 문자열 안에 코드를 넣어야 하므로, 줄바꿈은 반드시 `\\n` 문자로 이스케이프 처리하여 한 줄로 작성되어야 합니다.
         - plt.show()는 절대 사용하지 마세요.
-        - **필수** LaTeX 수식이 포함된 라벨은 반드시 **Raw String**을 사용해야 합니다.
+        - **필수** LaTeX 수식이 포함된 라벨은 필수적으로!!!! **Raw String**을 사용해야 합니다.
           (예: label='$y=\\frac{1}{2}x$' => label=r'$y=\\frac{1}{2}x$') -> r을 안 붙이면 오류가 발생합니다.
         - 줄바꿈은 `\\n`으로 이스케이프 처리하세요.
 
@@ -262,6 +262,43 @@ def extract_gemini(image, options_dict):
             "problem_text": "", 
             "diagram_code": "",
             "raw_text_debug": text if 'text' in locals() else "No text generated" # 원본 텍스트 반환
+        }
+    try:
+        # 1. 모델 생성 요청
+        response = model.generate_content([prompt, image])
+        text = response.text
+        
+        # 2. 마크다운(```json) 제거
+        clean_text = re.sub(r"```json|```", "", text).strip()
+
+        # 3. [핵심] JSON 파싱 시도 (실패 시 복구 로직 가동)
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError as e:
+            # st.warning(f"1차 파싱 실패: {e}. 자동 복구를 시도합니다...") # 디버깅용
+            
+            # [복구 로직] Invalid Escape 문자만 찾아서 백슬래시를 하나 더 붙임
+            # 설명: JSON에서 허용된 이스케이프(\", \\, \/, \b, \f, \n, \r, \t, \u)가 
+            # *아닌* 백슬래시 뒤의 문자를 찾아서 이중 백슬래시로 치환
+            fixed_text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', clean_text)
+            
+            try:
+                return json.loads(fixed_text)
+            except json.JSONDecodeError as e2:
+                # 복구도 실패하면 에러 리턴
+                return {
+                    "error": f"JSON Parsing Failed (Final): {str(e2)}", 
+                    "problem_text": "", 
+                    "diagram_code": "",
+                    "raw_text_debug": clean_text
+                }
+
+    except Exception as e:
+        return {
+            "error": f"Extraction Logic Failed: {str(e)}", 
+            "problem_text": "", 
+            "diagram_code": "",
+            "raw_text_debug": "Error occurred before text generation"
         }
 
 def get_index_or_default(options_list, value, default_index=0):
@@ -517,6 +554,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
