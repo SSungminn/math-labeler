@@ -312,103 +312,112 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
     st.divider()
 
+    # ... (이전 코드: st.cropper 등) ...
+
     if 'extracted' in st.session_state:
         item = st.session_state['extracted']
         
-        # AI 예측값 가져오기 (없으면 기본값)
-        pred_subject = item.get("subject", OPTIONS['subject'][0])
-        pred_unit = item.get("unit_major", OPTIONS['unit_major'][0])
-        pred_type = item.get("question_type", OPTIONS['question_type'][0])
-        pred_concept = item.get("concept", OPTIONS['concepts'][-1]) # 기본값 기타
-        pred_diff = item.get("difficulty", "중")
+        # 기본값 로드
+        default_prob = item.get('problem_text', "")
+        default_code = item.get('diagram_code', "")
+        
+        st.divider()
+        st.subheader("📝 데이터 검증 및 저장")
 
-        with st.form("labeling_form"):
-            st.subheader("📝 AI 자동 분류 결과 확인")
-            
-            # AI가 예측한 인덱스를 기본값으로 설정
-            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            subject = r1c1.selectbox("과목", OPTIONS['subject'], index=get_index_or_default(OPTIONS['subject'], pred_subject))
-            grade = r1c2.selectbox("학년", OPTIONS['grade'], index=0) # 학년은 이미지로 알기 어려움
-            source = r1c3.selectbox("출처", OPTIONS['source_org'], index=0) # 출처도 알기 어려움
-            unit = r1c4.selectbox("단원", OPTIONS['unit_major'], index=get_index_or_default(OPTIONS['unit_major'], pred_unit))
-            
-            r2c1, r2c2, r2c3 = st.columns(3)
-            diff = r2c1.selectbox("난이도", OPTIONS['difficulty'], index=get_index_or_default(OPTIONS['difficulty'], pred_diff))
-            q_type = r2c2.selectbox("유형", OPTIONS['question_type'], index=get_index_or_default(OPTIONS['question_type'], pred_type))
-            concept = r2c3.selectbox("핵심 개념", OPTIONS['concepts'], index=get_index_or_default(OPTIONS['concepts'], pred_concept))
-            
-            st.markdown("---")
-            
-            st.markdown("#### 📝 문제 내용 편집 & 미리보기")
-            
-            col_edit, col_preview = st.columns(2)
-            
-            with col_edit:
-                st.caption("왼쪽에서 수정하면 오른쪽에서 렌더링됩니다.")
-                # height를 좀 더 늘려서 편집하기 편하게 함
-                prob_text = st.text_area("문제 (LaTeX 원본)", value=item.get('problem_text', ""), height=300)
-                
-            with col_preview:
-                st.caption("👁️ 렌더링 미리보기 (LaTex & Graph)")
-                
-                # 1. 텍스트 렌더링
-                if prob_text:
-                    container = st.container(border=True)
-                    container.markdown(prob_text)
-                
-                # 2. 그래프(도형) 렌더링
-                code = item.get('diagram_code', "")
-                if code and "plt" in code:
-                    st.markdown("---")
-                    st.caption("📊 생성된 도형 코드 실행")
-                    
-                    # 코드 수정 가능하게 (필요하면 사람이 미세조정)
-                    edited_code = st.text_area("파이썬 그래프 코드", value=code, height=150)
-                    
-                    if st.button("▶️ 코드 실행 및 그래프 그리기"):
-                        try:
-                            # 안전한 샌드박스는 아니지만, 로컬/내부 툴에서는 허용
-                            local_vars = {}
-                            exec(edited_code, globals(), local_vars)
-                            
-                            if 'fig' in local_vars:
-                                st.pyplot(local_vars['fig'])
-                            else:
-                                st.warning("코드 실행 완료되었으나 'fig' 변수가 없습니다.")
-                        except Exception as e:
-                            st.error(f"그래프 그리기 실패: {e}")
+        # [변경] st.form을 제거하여 실시간 인터랙션 허용
+        # 1. 메타데이터 선택 (즉시 반영되어도 상관없음)
+        c1, c2, c3, c4 = st.columns(4)
+        subject = c1.selectbox("과목", OPTIONS['subject'], index=get_index_or_default(OPTIONS['subject'], item.get("subject")))
+        grade = c2.selectbox("학년", OPTIONS['grade'], index=0)
+        source = c3.selectbox("출처", OPTIONS['source_org'], index=0)
+        unit = c4.selectbox("단원", OPTIONS['unit_major'], index=get_index_or_default(OPTIONS['unit_major'], item.get("unit_major")))
+        
+        c5, c6, c7 = st.columns(3)
+        diff = c5.selectbox("난이도", OPTIONS['difficulty'], index=get_index_or_default(OPTIONS['difficulty'], item.get("difficulty")))
+        q_type = c6.selectbox("유형", OPTIONS['question_type'], index=get_index_or_default(OPTIONS['question_type'], item.get("question_type")))
+        concept = c7.selectbox("핵심 개념", OPTIONS['concepts'], index=get_index_or_default(OPTIONS['concepts'], item.get("concept")))
 
-            # 도형 설명은 보통 텍스트이므로 그대로 유지
-            diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80)
-            diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=100)
+        st.markdown("---")
+
+        # 2. 실시간 편집 & 미리보기 (Editor & Preview)
+        col_edit, col_preview = st.columns(2)
+        
+        with col_edit:
+            st.markdown("#### ✏️ 편집기")
+            # 문제 텍스트 수정
+            prob_text = st.text_area("문제 (LaTeX)", value=default_prob, height=300, key="prob_input")
             
-            if st.form_submit_button("🔥 저장 및 파일 이동"):
-                if 'cropped_img' not in st.session_state:
-                    st.error("이미지 없음")
-                else:
-                    try:
-                        with st.spinner("업로드 및 저장 중..."):
-                            timestamp = int(time.time())
-                            clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', current_file['name'].rsplit('.', 1)[0])
-                            img_filename = f"{clean_name}_{timestamp}.jpg"
-                            img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
+            # 그래프 코드 수정
+            st.caption("도형 Python 코드")
+            diag_code = st.text_area("Matplotlib Code", value=default_code, height=200, key="code_input")
+            
+            # 도형 설명 텍스트
+            diag_desc = st.text_area("도형 설명 (텍스트)", value=item.get('diagram_desc', ""), height=100)
+
+        with col_preview:
+            st.markdown("#### 👁️ 미리보기")
+            
+            # (A) 텍스트 렌더링
+            if prob_text:
+                st.info("수식 렌더링 확인")
+                st.markdown(prob_text)
+            else:
+                st.warning("텍스트가 없습니다.")
+            
+            # (B) 그래프 렌더링 (자동 실행)
+            if diag_code and "plt" in diag_code:
+                st.markdown("---")
+                st.info("📊 그래프 렌더링 확인")
+                try:
+                    local_vars = {}
+                    # exec는 안전하지 않지만, 내부 도구이므로 허용
+                    exec(diag_code, globals(), local_vars)
+                    if 'fig' in local_vars:
+                        st.pyplot(local_vars['fig'])
+                    else:
+                        st.warning("코드는 실행됐으나 'fig' 변수가 없습니다.")
+                except Exception as e:
+                    st.error(f"그래프 오류: {e}")
+
+        st.markdown("---")
+        
+        # 3. 최종 저장 버튼 (이것만 버튼으로 처리)
+        # form이 없으므로 모든 변수(prob_text, diag_code 등)는 현재 상태값을 그대로 가져감
+        if st.button("🔥 저장 및 파일 이동 (Save & Move)", type="primary", use_container_width=True):
+            if 'cropped_img' not in st.session_state:
+                st.error("이미지 세션이 만료되었습니다.")
+            else:
+                try:
+                    with st.spinner("데이터 저장 중..."):
+                        # 이미지 업로드
+                        timestamp = int(time.time())
+                        clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', current_file['name'].rsplit('.', 1)[0])
+                        img_filename = f"{clean_name}_{timestamp}.jpg"
+                        img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
                         
-                            doc_data = {
-                                "original_filename": current_file['name'],
-                                "drive_file_id": current_file['id'],
-                                "image_url": img_url,
-                                "storage_path": f"cropped_problems/{img_filename}",
-                                "meta": {
-                                    "subject": subject, "grade": grade, "source": source,
-                                    "unit": unit, "difficulty": diff, "question_type": q_type,
-                                    "concept": concept
-                                },
-                                "content": {"problem": prob_text, "diagram": diag_desc},
-                                "created_at": firestore.SERVER_TIMESTAMP,
-                                "labeler_version": "v3.0-ai-auto-class"
-                            }
-                            db.collection("math_dataset").add(doc_data)
-                            
+                        # Firestore 저장
+                        doc_data = {
+                            "original_filename": current_file['name'],
+                            "drive_file_id": current_file['id'],
+                            "image_url": img_url,
+                            "storage_path": f"cropped_problems/{img_filename}",
+                            "meta": {
+                                "subject": subject, "grade": grade, "source": source,
+                                "unit": unit, "difficulty": diff, "question_type": q_type,
+                                "concept": concept
+                            },
+                            # 코드 데이터도 같이 저장
+                            "content": {
+                                "problem": prob_text, 
+                                "diagram_desc": diag_desc,
+                                "diagram_code": diag_code  # 코드 저장
+                            },
+                            "created_at": firestore.SERVER_TIMESTAMP,
+                            "labeler_version": "v3.1-live-preview"
+                        }
+                        db.collection("math_dataset").add(doc_data)
+                        
+                        # 파일 이동
                         if done_folder_id:
                             move_file_to_done(current_file['id'], folder_id, done_folder_id)
                             st.toast("✅ 저장 완료!")
@@ -418,12 +427,14 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                             time.sleep(1)
                             st.rerun()
                         else:
-                            st.warning("저장됨 (파일 이동 안함)")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                            st.success("저장 완료 (파일 이동 안 함)")
+                            
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
