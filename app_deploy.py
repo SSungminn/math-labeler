@@ -420,26 +420,28 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                 st.info("📊 그래프 렌더링 확인")
                 try:
                     local_vars = {}
+                    
+                    # [Linus Coach Fix] exec 실행 전 plt.show()를 암살한다.
+                    # AI가 plt.show()를 써놨으면 Streamlit이 그걸 보고 st.pyplot을 호출해서 에러가 남.
+                    safe_code = diag_code.replace("plt.show()", "# plt.show()")
+                    
                     # exec는 로컬 툴에서만 허용 (보안 유의)
-                    exec(diag_code, globals(), local_vars)
+                    exec(safe_code, globals(), local_vars)
                     
                     if 'fig' in local_vars:
-                        # [Linus Coach Fix] st.pyplot() 대신 직접 렌더링 (버전 호환성 해결)
-                        # Matplotlib 3.9+에서 st.pyplot이 내부적으로 깨지는 현상을 방지함
-                        
                         # 1. 메모리 버퍼 생성
                         buf = io.BytesIO()
                         
-                        # 2. 그래프를 버퍼에 PNG 포맷으로 저장 (여백 제거 옵션 포함)
+                        # 2. 그래프를 버퍼에 PNG 포맷으로 저장
                         local_vars['fig'].savefig(buf, format="png", bbox_inches='tight', dpi=150)
                         
-                        # 3. 버퍼 포인터를 처음으로 되돌림
+                        # 3. 버퍼 포인터 리셋
                         buf.seek(0)
                         
                         # 4. Streamlit 이미지로 출력
                         st.image(buf, width="stretch")
                         
-                        # 5. 메모리 해제 (선택사항이지만 권장)
+                        # 5. 메모리 해제
                         plt.close(local_vars['fig'])
                         
                     else:
@@ -531,6 +533,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
