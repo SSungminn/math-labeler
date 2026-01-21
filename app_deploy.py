@@ -278,4 +278,80 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_color="#FF0000",
-            background_image=resized_img, # [변경] 원본 대신 리사이즈된
+            background_image=resized_img, # [변경] 원본 대신 리사이즈된 이미지 전달
+            initial_drawing=st.session_state.get('canvas_init'),
+            update_streamlit=True,
+            height=canvas_height,
+            width=CANVAS_WIDTH,
+            drawing_mode="transform",
+            key=f"canvas_{current_file['id']}"
+        )
+        st.session_state['canvas_result'] = canvas_result
+
+    # ==========================================
+    # Step 2: 결과 확인 및 저장
+    # ==========================================
+    st.divider()
+    
+    if 'final_results' in st.session_state:
+        results = st.session_state['final_results']
+        save_data_list = []
+        
+        tabs = st.tabs([f"문제 {i+1}" for i in range(len(results))])
+        
+        for i, tab in enumerate(tabs):
+            with tab:
+                item = results[i]
+                c_img, c_info = st.columns([1, 2])
+                with c_img:
+                    st.image(item['img'], caption=f"Crop Result {i+1}")
+                with c_info:
+                    with st.container(border=True):
+                        c1, c2 = st.columns(2)
+                        subj = c1.selectbox("과목", OPTIONS['subject'], key=f"s_{i}")
+                        grd = c2.selectbox("학년", OPTIONS['grade'], key=f"g_{i}")
+                        src = c1.selectbox("출처", OPTIONS['source_org'], key=f"src_{i}")
+                        unt = c2.selectbox("단원", OPTIONS['unit_major'], key=f"u_{i}")
+                        dif = c1.selectbox("난이도", OPTIONS['difficulty'], key=f"d_{i}")
+                        typ = c2.selectbox("유형", OPTIONS['question_type'], key=f"t_{i}")
+                        cpt = st.selectbox("개념", OPTIONS['concepts'], key=f"c_{i}")
+                        
+                        prob = st.text_area("문제", item['data'].get('problem_text', ""), key=f"p_{i}")
+                        desc = st.text_area("설명", item['data'].get('diagram_desc', ""), key=f"d_{i}")
+                        
+                        save_data_list.append({
+                            "img": item['img'],
+                            "meta": {"subject": subj, "grade": grd, "source": src, "unit": unt, "difficulty": dif, "question_type": typ, "concept": cpt},
+                            "content": {"problem": prob, "diagram": desc}
+                        })
+
+        if st.button("💾 전체 저장 및 완료처리", type="primary"):
+            with st.spinner("저장 중..."):
+                for idx, data in enumerate(save_data_list):
+                    ts = int(time.time())
+                    fname = f"{current_file['name'].rsplit('.',1)[0]}_{ts}_{idx}.jpg"
+                    url = upload_image_to_storage(data['img'], fname)
+                    
+                    doc = {
+                        "original_filename": current_file['name'],
+                        "drive_file_id": current_file['id'],
+                        "problem_index": idx+1,
+                        "image_url": url,
+                        "storage_path": f"cropped_problems/{fname}",
+                        "meta": data['meta'],
+                        "content": data['content'],
+                        "created_at": firestore.SERVER_TIMESTAMP
+                    }
+                    db.collection("math_dataset").add(doc)
+                
+                if done_folder_id:
+                    move_file_to_done(current_file['id'], folder_id, done_folder_id)
+                    st.toast("파일 이동 완료!")
+                    time.sleep(1)
+                    st.session_state.pop('final_results', None)
+                    st.session_state.pop('canvas_init', None)
+                    st.rerun()
+                else:
+                    st.success("저장 완료!")
+else:
+    st.info("왼쪽 사이드바에서 드라이브를 연결해주세요.")
