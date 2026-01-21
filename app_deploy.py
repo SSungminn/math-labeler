@@ -253,11 +253,11 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                     st.session_state['final_results'] = results
 
     with col_canvas:
-        # [수정됨] np.array()로 변환하여 image_to_url 에러 회피
+        # [수정됨] np.array() 제거 -> resized_img 그대로 사용 (이제 버전 맞춰서 에러 안 남)
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_color="#FF0000",
-            background_image=np.array(resized_img), 
+            background_image=resized_img,  # <--- 여기를 고쳤습니다
             initial_drawing=st.session_state.get('canvas_init'),
             update_streamlit=True,
             height=canvas_height,
@@ -329,3 +329,4 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                     st.success("저장 완료!")
 else:
     st.info("왼쪽 사이드바에서 드라이브를 연결해주세요.")
+
