@@ -54,13 +54,21 @@ def init_firebase():
 def get_drive_service():
     """
     Authenticates Google Drive API once and caches the service object.
+    Patches missing token_uri to prevent 'No access token' errors.
     """
-    SCOPES = ['[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)']
+    SCOPES = ['https://www.googleapis.com/auth/drive']
     creds = None
     
     try:
         if "firebase" in st.secrets:
+            # 1. Load the secrets as a mutable dictionary
             key_dict = dict(st.secrets["firebase"])
+            
+            # 2. CRITICAL FIX: Force the token_uri if missing
+            # This tells google-auth where to exchange the JWT for an Access Token
+            if "token_uri" not in key_dict:
+                key_dict["token_uri"] = "https://oauth2.googleapis.com/token"
+            
             creds = service_account.Credentials.from_service_account_info(
                 key_dict, scopes=SCOPES
             )
@@ -379,3 +387,4 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 Connect to Google Drive from the sidebar to start.")
+
