@@ -158,57 +158,75 @@ def upload_image_to_storage(image, filename):
     return blob.public_url
 
 def extract_gemini(image, options_dict):
+    """
+    이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
+    JSON 모드를 강제하여 응답 누락을 방지합니다.
+    """
     if "GEMINI_API_KEY" not in st.secrets:
-        return {"error": "API Key Missing"}
+        return {"error": "API Key Missing in Secrets"}
 
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel("gemini-2.0-flash") 
+        
+        # [핵심 1] JSON 응답 강제 설정 (Gemini 1.5 Pro/Flash 이상 지원)
+        generation_config = {
+            "temperature": 0.2, # 창의성 낮춤 (정확도 위주)
+            "response_mime_type": "application/json"
+        }
+        
+        model = genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config) 
         
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
-        # [중요] diagram_code 요청이 포함된 프롬프트
         prompt = f"""
-        당신은 한국의 고등학교 수학 전문가이자 Python 시각화 전문가입니다.
-        
-        [지시사항]
-        1. **수식 추출**: LaTeX 포맷($...$)으로 변환.
-        2. **문제 텍스트**: 한국어 그대로 추출.
-        3. **도형 코드 생성(핵심)**: 
-           - 이미지의 도형/그래프를 Python `matplotlib`로 그리는 **실행 가능한 코드**를 작성하세요.
-           - `import matplotlib.pyplot as plt` 필수.
-           - 결과 객체는 반드시 `fig` 변수에 할당. (예: `fig, ax = plt.subplots()`)
-           - 한글 폰트 설정 제외 (시스템 기본 사용).
-           - 코드는 JSON의 "diagram_code" 필드에 문자열로 넣으세요.
-        4. **자동 분류**: 아래 리스트 참고.
+        You are a highly skilled Math Data Engineer. 
+        Analyze the math problem image and output a JSON object.
 
-        [분류 리스트]
+        [Task 1: Math LaTeX Extraction]
+        - Convert all math expressions to LaTeX wrapped in single dollar signs (e.g., $y=x^2$).
+        - Use `\\frac{{a}}{{b}}` for fractions.
+        - Keep the Korean text exactly as is.
+
+        [Task 2: Python Matplotlib Code Generation]
+        - IF the problem involves graphs (functions, geometry, curves), you MUST generate Python code to visualize it.
+        - Code requirements:
+          1. Start with `import matplotlib.pyplot as plt`
+          2. Use `fig, ax = plt.subplots()`
+          3. Plot the functions described in the problem accurately.
+          4. Do NOT use Korean fonts (use English labels or no labels).
+          5. Store the entire code as a single string in the `diagram_code` field (use \\n for newlines).
+        - If NO diagram is needed, return empty string "".
+
+        [Task 3: Classification]
+        - Select the best fit from the provided list:
         {options_str}
 
-        [출력 포맷 (JSON)]
+        [Response Schema (JSON Example)]
         {{
-            "problem_text": "...",
-            "diagram_code": "import matplotlib.pyplot as plt\\n...",
-            "diagram_desc": "...",
-            "subject": "...",
-            "unit_major": "...",
-            "question_type": "...",
-            "concept": "...",
-            "difficulty": "..."
+            "problem_text": "함수 $f(x)=x^2$에 대하여...",
+            "diagram_code": "import matplotlib.pyplot as plt\\nimport numpy as np\\n\\nfig, ax = plt.subplots()\\nx = np.linspace(-5, 5, 100)\\nax.plot(x, x**2)\\n",
+            "diagram_desc": "이차함수 그래프가 원점을 지나고...",
+            "subject": "수학II",
+            "unit_major": "미분법",
+            "question_type": "계산형",
+            "concept": "미분계수의 정의",
+            "difficulty": "중"
         }}
         """
         
         response = model.generate_content([prompt, image])
         text = response.text
         
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
-        else:
-            return {"problem_text": text, "error": "Format Error"}
+        # JSON 모드를 썼지만 혹시 모를 마크다운 제거
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+            
+        return json.loads(text)
             
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Extraction Failed: {str(e)}", "problem_text": "", "diagram_code": ""}
 
 def get_index_or_default(options_list, value, default_index=0):
     """AI가 예측한 값이 리스트에 있으면 그 인덱스를 반환, 없으면 0 반환"""
@@ -454,6 +472,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
