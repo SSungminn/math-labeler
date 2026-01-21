@@ -158,59 +158,54 @@ def upload_image_to_storage(image, filename):
     return blob.public_url
 
 def extract_gemini(image, options_dict):
-    """
-    이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
-    options_dict를 프롬프트에 포함시켜 AI가 선택지 내에서 답을 고르도록 유도합니다.
-    """
     if "GEMINI_API_KEY" not in st.secrets:
-        return {"error": "API Key Missing in Secrets"}
+        return {"error": "API Key Missing"}
 
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel("gemini-2.0-flash") 
         
-        # 옵션 리스트를 문자열로 변환하여 프롬프트에 주입
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
+        # [중요] diagram_code 요청이 포함된 프롬프트
         prompt = f"""
         당신은 한국의 고등학교 수학 전문가이자 Python 시각화 전문가입니다.
-    
-    [지시사항]
-    1. **수식 추출**: LaTeX 포맷($...$)으로 변환.
-    2. **문제 텍스트**: 한국어 그대로 추출.
-    3. **도형 코드 생성(중요)**: 
-       - 이미지의 도형/그래프를 Python `matplotlib`로 최대한 비슷하게 그릴 수 있는 **실행 가능한 파이썬 코드**를 작성하세요.
-       - 코드는 `import matplotlib.pyplot as plt`로 시작해야 합니다.
-       - 결과 객체는 `fig` 변수에 저장되어야 합니다. (예: `fig, ax = plt.subplots()...`)
-       - 한글 폰트 설정은 제외하세요 (시스템 기본 폰트 사용).
-    4. **자동 분류**: 제공된 리스트 참고.
+        
+        [지시사항]
+        1. **수식 추출**: LaTeX 포맷($...$)으로 변환.
+        2. **문제 텍스트**: 한국어 그대로 추출.
+        3. **도형 코드 생성(핵심)**: 
+           - 이미지의 도형/그래프를 Python `matplotlib`로 그리는 **실행 가능한 코드**를 작성하세요.
+           - `import matplotlib.pyplot as plt` 필수.
+           - 결과 객체는 반드시 `fig` 변수에 할당. (예: `fig, ax = plt.subplots()`)
+           - 한글 폰트 설정 제외 (시스템 기본 사용).
+           - 코드는 JSON의 "diagram_code" 필드에 문자열로 넣으세요.
+        4. **자동 분류**: 아래 리스트 참고.
 
         [분류 리스트]
         {options_str}
 
-        [출력 포맷]
-        반드시 아래의 JSON 형식으로만 출력하세요 (마크다운 없이 순수 JSON):
+        [출력 포맷 (JSON)]
         {{
-            "problem_text": "추출된 문제 내용...",
-            "diagram_desc": "도형 설명...",
-            "subject": "분류 리스트의 subject 중 택1",
-            "unit_major": "분류 리스트의 unit_major 중 택1",
-            "question_type": "분류 리스트의 question_type 중 택1",
-            "concept": "분류 리스트의 concepts 중 택1 (없으면 '기타')",
-            "difficulty": "분류 리스트의 difficulty 중 택1 (추정)"
+            "problem_text": "...",
+            "diagram_code": "import matplotlib.pyplot as plt\\n...",
+            "diagram_desc": "...",
+            "subject": "...",
+            "unit_major": "...",
+            "question_type": "...",
+            "concept": "...",
+            "difficulty": "..."
         }}
         """
         
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # JSON 파싱
         json_match = re.search(r"\{.*\}", text, re.DOTALL)
         if json_match:
-            clean_json = json_match.group(0)
-            return json.loads(clean_json)
+            return json.loads(json_match.group(0))
         else:
-            return {"problem_text": text, "diagram_desc": "JSON 파싱 실패", "error": "Format Error"}
+            return {"problem_text": text, "error": "Format Error"}
             
     except Exception as e:
         return {"error": str(e)}
@@ -429,5 +424,6 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
