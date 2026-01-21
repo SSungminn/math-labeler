@@ -160,7 +160,7 @@ def upload_image_to_storage(image, filename):
 def extract_gemini(image, options_dict):
     """
     이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
-    한국어 설명 강제 및 텍스트 기반 그래프 생성 로직이 강화되었습니다.
+    Matplotlib 코드 생성을 강제하도록 프롬프트가 강화되었습니다.
     """
     if "GEMINI_API_KEY" not in st.secrets:
         return {"error": "API Key Missing in Secrets"}
@@ -168,36 +168,38 @@ def extract_gemini(image, options_dict):
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         
-        # JSON 모드 유지 (데이터 구조 깨짐 방지)
+        # JSON 모드 유지
         generation_config = {
-            "temperature": 0.1, # 창의성 최소화 (정확도 극대화)
+            "temperature": 0.1, 
             "response_mime_type": "application/json"
         }
         
+        # 2.0 Flash가 코드를 잘 못 짜면 1.5 Pro로 변경 고려 (일단 Flash 유지)
         model = genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config) 
         
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
-        # [변경점] 프롬프트를 명확한 지시사항으로 변경
+        # [변경점] 프롬프트 강화: 조건부 삭제, 무조건 생성 지시, 예외 처리 추가
         prompt = f"""
-        당신은 한국의 수학 교육 전문가이자 Python 개발자입니다.
-        제공된 수학 문제 이미지를 분석하여 다음 3가지 작업을 수행하고 JSON으로 반환하세요.
+        당신은 한국의 수학 교육 전문가이자 Python Matplotlib 코딩 전문가입니다.
+        제공된 수학 문제 이미지를 분석하여 다음 작업을 수행하고 JSON으로 반환하세요.
 
         [작업 1: 텍스트 및 수식 추출]
         - 문제의 모든 텍스트를 한국어 그대로 추출하세요.
-        - 수식은 반드시 LaTeX 포맷($...$)을 사용하세요. (예: $y=2x+k$)
-        - 분수는 `\\frac{{a}}{{b}}` 형태를 유지하세요.
+        - 수식은 LaTeX 포맷($...$)을 사용하세요.
+        - 보기가 있다면 보기까지 모두 포함하세요.
 
         [작업 2: 도형 설명 (diagram_desc)]
-        - 도형이나 그래프의 개형, 교점의 위치, 축과의 관계 등을 **반드시 '한국어'로** 자세히 서술하세요.
-        - 영어를 사용하지 마세요.
+        - 시각장애인을 위해 그래프나 도형의 생김새를 한국어로 상세히 묘사하세요.
+        - "그림 참고"라고 하지 말고, "원점을 지나고 우상향하는 직선" 처럼 구체적으로 쓰세요.
 
         [작업 3: Python Matplotlib 코드 생성 (diagram_code)]
-        - **중요:** 문제 텍스트에 함수식(예: $y=f(x)$)이나 도형이 언급되어 있다면, 이를 시각화하는 파이썬 코드를 **무조건** 작성해야 합니다.
-        - 코드는 `import matplotlib.pyplot as plt`로 시작해야 합니다.
-        - `fig, ax = plt.subplots()`를 사용하여 객체를 생성하세요.
-        - 한글 폰트 깨짐 방지를 위해 그래프 내 라벨(title, label 등)은 영어나 수식($...$)만 사용하거나 생략하세요.
-        - `k` 같은 미지수가 있다면 임의의 값(예: k=1)을 가정하고 주석을 다세요.
+        - **매우 중요:** 이 필드는 절대로 비워둘 수 없습니다. ("" 금지)
+        - 문제에 그래프, 도형, 함수식이 조금이라도 보인다면 그것을 그리는 코드를 작성하세요.
+        - **만약 그림이 없는 단순 계산 문제라면, 빈 좌표평면(x축, y축)이라도 그리는 코드를 반드시 넣으세요.**
+        - 코드는 반드시 `import matplotlib.pyplot as plt`와 `fig, ax = plt.subplots()`를 포함해야 합니다.
+        - 한글 폰트 문제는 피하기 위해 라벨은 영어나 수식($...$)만 사용하세요.
+        - JSON 문자열 안에 코드를 넣어야 하므로, 줄바꿈은 반드시 `\\n` 문자로 이스케이프 처리하여 한 줄로 작성되어야 합니다.
 
         [작업 4: 자동 분류]
         - 아래 리스트에서 가장 적절한 값을 선택하세요:
@@ -205,9 +207,9 @@ def extract_gemini(image, options_dict):
 
         [응답 스키마 (JSON)]
         {{
-            "problem_text": "추출된 문제 내용...",
-            "diagram_desc": "이 지수함수 그래프는 점 P, Q에서 직선과 만나며...",
-            "diagram_code": "import matplotlib.pyplot as plt\\nimport numpy as np\\n...",
+            "problem_text": "추출된 텍스트...",
+            "diagram_desc": "그래프 설명...",
+            "diagram_code": "import matplotlib.pyplot as plt\\nfig, ax = plt.subplots()\\n...",
             "subject": "...",
             "unit_major": "...",
             "question_type": "...",
@@ -219,13 +221,18 @@ def extract_gemini(image, options_dict):
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # 혹시 모를 마크다운 태그 제거
+        # Markdown 제거
         clean_text = re.sub(r"```json|```", "", text).strip()
             
         return json.loads(clean_text)
             
     except Exception as e:
-        return {"error": f"Extraction Failed: {str(e)}", "problem_text": "", "diagram_code": ""}
+        # 에러 발생 시에도 빈 값 대신 기본 템플릿 반환
+        return {
+            "error": f"Extraction Failed: {str(e)}", 
+            "problem_text": "", 
+            "diagram_code": "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nax.text(0.5, 0.5, 'Error generating graph', ha='center')"
+        }
 
 def get_index_or_default(options_list, value, default_index=0):
     """AI가 예측한 값이 리스트에 있으면 그 인덱스를 반환, 없으면 0 반환"""
@@ -471,6 +478,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
