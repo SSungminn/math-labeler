@@ -87,8 +87,13 @@ def download_image_from_drive(file_id):
     return Image.open(file_obj)
 
 # Gemini AI 추출
-def extract_gemini(api_key, image):
-    if not api_key: return {"error": "No API Key"}
+def extract_gemini(image):
+    # 여기서 직접 Secrets를 가져옴 (사용자는 절대 못 봄)
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    else:
+        return {"error": "Secrets에 API Key가 설정되지 않았습니다."}
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
@@ -112,24 +117,19 @@ st.caption("Storage: Firebase Firestore | Source: Google Drive")
 with st.sidebar:
     st.header("⚙️ 설정")
     
-    # API Key도 Secrets에 있으면 자동으로 가져옴
-    default_api_key = st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else ""
-    api_key = st.text_input("Google AI Key", value=default_api_key, type="password")
+    # [삭제] 아래 두 줄을 지워라! 더 이상 필요 없다.
+    # default_api_key = ...
+    # api_key = st.text_input(...) 
     
-    # 구글 드라이브 폴더 ID 입력 (URL의 뒷부분)
-    # ex: drive.google.com/drive/folders/1ABC... -> "1ABC..."
+    # [유지] 폴더 ID 입력은 유지
     folder_id = st.text_input("Drive Folder ID", placeholder="구글 드라이브 폴더 ID 붙여넣기")
     
-    if st.button("📂 드라이브 불러오기"):
-        if folder_id:
-            with st.spinner("드라이브 스캔 중..."):
-                files = list_drive_images(folder_id)
-                st.session_state['drive_files'] = files
-                st.session_state['idx'] = 0
-                st.success(f"{len(files)}개 파일 발견!")
-        else:
-            st.error("폴더 ID를 입력하세요.")
-
+    if st.button("⚡ AI 분석", key="ai_btn"):
+    with st.spinner("Analysing..."):
+        # [수정 전] extracted = extract_gemini(api_key, image)
+        # [수정 후] 인자 없이 호출
+        extracted = extract_gemini(image) 
+        st.session_state['extracted'] = extracted
 if 'drive_files' in st.session_state and st.session_state['drive_files']:
     files = st.session_state['drive_files']
     idx = st.session_state['idx']
@@ -195,4 +195,5 @@ else:
     st.markdown("""
     **Tip:** 폴더 ID는 구글 드라이브 주소창에서 확인 가능합니다.
     `drive.google.com/drive/u/0/folders/` 뒤에 있는 **긴 문자열**입니다.
+
     """)
