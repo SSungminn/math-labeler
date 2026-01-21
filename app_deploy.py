@@ -345,7 +345,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         
         col_view, col_action = st.columns([1, 1])
         with col_view:
-            st.image(cropped_img, use_container_width=True)
+            st.image(cropped_img, width="stretch")
         with col_action:
             if st.button("✨ AI 분석 및 자동 분류", type="primary"):
                 with st.spinner("Gemini가 문제를 풀고 분류 중입니다..."):
@@ -437,7 +437,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
         # [버튼 1] 데이터 저장만 수행 (이동 X, 리프레시 X)
         with col_btn_save:
-            if st.button("💾 데이터 저장 (DB Save)", type="secondary", use_container_width=True):
+            if st.button("💾 데이터 저장 (DB Save)", type="secondary", width="stretch"):
                 if 'cropped_img' not in st.session_state:
                     st.error("이미지 세션 만료")
                 else:
@@ -485,7 +485,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
             if not st.session_state.get('is_saved', False):
                 btn_label += " [⚠️미저장 상태]"
             
-            if st.button(btn_label, type="primary", use_container_width=True):
+            if st.button(btn_label, type="primary", width="stretch"):
                 # 안전장치: 저장을 안 했는데 이동하려고 하면 경고
                 if not st.session_state.get('is_saved', False):
                     st.warning("⚠️ 데이터를 아직 저장하지 않았습니다! 먼저 '데이터 저장'을 눌러주세요.")
@@ -512,6 +512,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
