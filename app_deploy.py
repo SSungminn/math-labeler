@@ -233,6 +233,31 @@ def extract_gemini(image, options_dict):
             "problem_text": "", 
             "diagram_code": "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nax.text(0.5, 0.5, 'Error generating graph', ha='center')"
         }
+    try:
+        # ... (모델 생성 및 프롬프트 코드 생략) ...
+        
+        response = model.generate_content([prompt, image])
+        text = response.text
+        
+        # [디버깅 1] 터미널(콘솔)에 강제로 찍어서 확인 (서버 로그용)
+        print("================ GEMINI RAW RESPONSE ================")
+        print(text)
+        print("=====================================================")
+
+        # 혹시 모를 마크다운 태그 제거
+        clean_text = re.sub(r"```json|```", "", text).strip()
+            
+        return json.loads(clean_text)
+            
+    except Exception as e:
+        # [디버깅 2] 에러가 나면 'raw_text' 키에 원본을 담아서 리턴
+        st.error(f"JSON 파싱 실패! 원본을 확인하세요.")
+        return {
+            "error": f"Extraction Failed: {str(e)}", 
+            "problem_text": "", 
+            "diagram_code": "",
+            "raw_text_debug": text if 'text' in locals() else "No text generated" # 원본 텍스트 반환
+        }
 
 def get_index_or_default(options_list, value, default_index=0):
     """AI가 예측한 값이 리스트에 있으면 그 인덱스를 반환, 없으면 0 반환"""
@@ -478,6 +503,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
