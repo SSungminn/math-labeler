@@ -173,14 +173,17 @@ def extract_gemini(image, options_dict):
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
         prompt = f"""
-        당신은 한국의 고등학교 수학 전문가입니다. 이 수학 문제 이미지를 완벽하게 분석하세요.
-        
-        [지시사항]
-        1. **수식 추출**: 모든 수식은 LaTeX 포맷($...$)으로 변환하세요.
-        2. **문제 텍스트**: 문제의 지문 내용을 한국어 그대로 추출하세요.
-        3. **도형 설명**: 도형이나 그래프가 있다면 'diagram_desc'에 한국어로 자세히 묘사하세요.
-        4. **자동 분류**: 아래 제공된 [분류 리스트]를 참고하여, 이 문제에 가장 적합한 항목을 하나씩 선택하세요.
-           (반드시 리스트 안에 있는 단어만 사용해야 합니다.)
+        당신은 한국의 고등학교 수학 전문가이자 Python 시각화 전문가입니다.
+    
+    [지시사항]
+    1. **수식 추출**: LaTeX 포맷($...$)으로 변환.
+    2. **문제 텍스트**: 한국어 그대로 추출.
+    3. **도형 코드 생성(중요)**: 
+       - 이미지의 도형/그래프를 Python `matplotlib`로 최대한 비슷하게 그릴 수 있는 **실행 가능한 파이썬 코드**를 작성하세요.
+       - 코드는 `import matplotlib.pyplot as plt`로 시작해야 합니다.
+       - 결과 객체는 `fig` 변수에 저장되어야 합니다. (예: `fig, ax = plt.subplots()...`)
+       - 한글 폰트 설정은 제외하세요 (시스템 기본 폰트 사용).
+    4. **자동 분류**: 제공된 리스트 참고.
 
         [분류 리스트]
         {options_str}
@@ -351,13 +354,34 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                 prob_text = st.text_area("문제 (LaTeX 원본)", value=item.get('problem_text', ""), height=300)
                 
             with col_preview:
-                st.caption("👁️ 렌더링 미리보기 (LaTex 적용됨)")
-                # 여기가 핵심: st.markdown은 LaTeX($...$)를 자동으로 렌더링함
+                st.caption("👁️ 렌더링 미리보기 (LaTex & Graph)")
+                
+                # 1. 텍스트 렌더링
                 if prob_text:
                     container = st.container(border=True)
                     container.markdown(prob_text)
-                else:
-                    st.info("왼쪽에 텍스트가 없습니다.")
+                
+                # 2. 그래프(도형) 렌더링
+                code = item.get('diagram_code', "")
+                if code and "plt" in code:
+                    st.markdown("---")
+                    st.caption("📊 생성된 도형 코드 실행")
+                    
+                    # 코드 수정 가능하게 (필요하면 사람이 미세조정)
+                    edited_code = st.text_area("파이썬 그래프 코드", value=code, height=150)
+                    
+                    if st.button("▶️ 코드 실행 및 그래프 그리기"):
+                        try:
+                            # 안전한 샌드박스는 아니지만, 로컬/내부 툴에서는 허용
+                            local_vars = {}
+                            exec(edited_code, globals(), local_vars)
+                            
+                            if 'fig' in local_vars:
+                                st.pyplot(local_vars['fig'])
+                            else:
+                                st.warning("코드 실행 완료되었으나 'fig' 변수가 없습니다.")
+                        except Exception as e:
+                            st.error(f"그래프 그리기 실패: {e}")
 
             # 도형 설명은 보통 텍스트이므로 그대로 유지
             diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80)
@@ -405,4 +429,5 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
