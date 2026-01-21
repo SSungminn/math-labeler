@@ -11,7 +11,7 @@ import google.generativeai as genai
 from PIL import Image
 import time
 from streamlit_drawable_canvas import st_canvas
-import numpy as np # 리사이징 계산용
+import numpy as np
 
 # ==========================================
 # 0. 사용자 설정
@@ -86,7 +86,6 @@ def download_image_from_drive(file_id):
         status, done = downloader.next_chunk()
     file_obj.seek(0)
     img = Image.open(file_obj)
-    # RGBA(투명) 이미지는 JPG 저장 시 에러나므로 RGB로 변환
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     return img
@@ -190,7 +189,6 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         
     current_file = files[idx]
     
-    # 이미지 로드
     if 'current_file_id' not in st.session_state or st.session_state['current_file_id'] != current_file['id']:
         st.session_state['original_img'] = download_image_from_drive(current_file['id'])
         st.session_state['current_file_id'] = current_file['id']
@@ -200,16 +198,14 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
     original_img = st.session_state['original_img']
     img_w, img_h = original_img.size
 
-    # [핵심 변경] 캔버스 표시용 리사이징 (너비 600px 고정)
+    # 캔버스용 리사이징
     CANVAS_WIDTH = 600
     scale_factor = img_w / CANVAS_WIDTH
     canvas_height = int(img_h / scale_factor)
-    
-    # 캔버스용 이미지 생성 (Resized)
     resized_img = original_img.resize((CANVAS_WIDTH, canvas_height))
 
     # ==========================================
-    # Step 1: AI 제안 및 캔버스 설정
+    # Step 1: AI 제안 및 캔버스
     # ==========================================
     col_ctrl, col_canvas = st.columns([1, 2])
     
@@ -217,17 +213,12 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         st.subheader("1️⃣ 영역 설정")
         prob_count = st.number_input("문제 개수", min_value=1, max_value=10, value=2)
         
-        # [AI 제안 버튼]
         if st.button("🤖 AI 영역 제안"):
-            with st.spinner("AI가 문제 위치를 찾고 있습니다..."):
+            with st.spinner("위치 찾는 중..."):
                 boxes = suggest_boxes_gemini(original_img, prob_count)
-                
                 initial_objects = []
                 for box in boxes:
-                    # Gemini [ymin, xmin, ymax, xmax] (0-1000)
                     ymin, xmin, ymax, xmax = box
-                    
-                    # 1000분율 -> 캔버스 픽셀(600px 기준)로 변환
                     rect = {
                         "type": "rect",
                         "left": xmin / 1000 * CANVAS_WIDTH,
@@ -239,46 +230,34 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                         "strokeWidth": 2
                     }
                     initial_objects.append(rect)
-                
-                st.session_state['canvas_init'] = {
-                    "version": "4.4.0",
-                    "objects": initial_objects
-                }
+                st.session_state['canvas_init'] = {"version": "4.4.0", "objects": initial_objects}
         
-        st.info("👉 오른쪽에서 박스를 수정하세요.")
+        st.info("박스를 수정하고 아래 버튼을 누르세요.")
         
-        # [최종 분석 버튼]
         if st.button("⚡ 자르기 및 분석", type="primary"):
             if 'canvas_result' in st.session_state and st.session_state['canvas_result'].json_data:
                 objects = st.session_state['canvas_result'].json_data["objects"]
-                
                 if len(objects) == 0:
                     st.error("박스가 없습니다.")
                 else:
                     results = []
-                    with st.spinner(f"{len(objects)}개 문제 분석 중..."):
-                        for i, obj in enumerate(objects):
-                            # 캔버스 좌표 -> 원본 좌표 변환
+                    with st.spinner("분석 중..."):
+                        for obj in objects:
                             left = int(obj["left"] * scale_factor)
                             top = int(obj["top"] * scale_factor)
                             width = int(obj["width"] * scale_factor)
                             height = int(obj["height"] * scale_factor)
-                            
-                            # 원본에서 자르기
                             crop_img = original_img.crop((left, top, left+width, top+height))
-                            
-                            # AI 분석
                             analysis = analyze_cropped_image(crop_img)
                             results.append({"img": crop_img, "data": analysis})
-                    
                     st.session_state['final_results'] = results
 
     with col_canvas:
-        # 캔버스 그리기 (배경은 리사이즈된 이미지 사용)
+        # [수정됨] np.array()로 변환하여 image_to_url 에러 회피
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_color="#FF0000",
-            background_image=resized_img, # [변경] 원본 대신 리사이즈된 이미지 전달
+            background_image=np.array(resized_img), 
             initial_drawing=st.session_state.get('canvas_init'),
             update_streamlit=True,
             height=canvas_height,
@@ -289,14 +268,12 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         st.session_state['canvas_result'] = canvas_result
 
     # ==========================================
-    # Step 2: 결과 확인 및 저장
+    # Step 2: 저장
     # ==========================================
     st.divider()
-    
     if 'final_results' in st.session_state:
         results = st.session_state['final_results']
         save_data_list = []
-        
         tabs = st.tabs([f"문제 {i+1}" for i in range(len(results))])
         
         for i, tab in enumerate(tabs):
@@ -304,7 +281,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                 item = results[i]
                 c_img, c_info = st.columns([1, 2])
                 with c_img:
-                    st.image(item['img'], caption=f"Crop Result {i+1}")
+                    st.image(item['img'], caption=f"Result {i+1}")
                 with c_info:
                     with st.container(border=True):
                         c1, c2 = st.columns(2)
@@ -315,23 +292,20 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                         dif = c1.selectbox("난이도", OPTIONS['difficulty'], key=f"d_{i}")
                         typ = c2.selectbox("유형", OPTIONS['question_type'], key=f"t_{i}")
                         cpt = st.selectbox("개념", OPTIONS['concepts'], key=f"c_{i}")
-                        
                         prob = st.text_area("문제", item['data'].get('problem_text', ""), key=f"p_{i}")
                         desc = st.text_area("설명", item['data'].get('diagram_desc', ""), key=f"d_{i}")
-                        
                         save_data_list.append({
                             "img": item['img'],
                             "meta": {"subject": subj, "grade": grd, "source": src, "unit": unt, "difficulty": dif, "question_type": typ, "concept": cpt},
                             "content": {"problem": prob, "diagram": desc}
                         })
 
-        if st.button("💾 전체 저장 및 완료처리", type="primary"):
+        if st.button("💾 전체 저장", type="primary"):
             with st.spinner("저장 중..."):
                 for idx, data in enumerate(save_data_list):
                     ts = int(time.time())
                     fname = f"{current_file['name'].rsplit('.',1)[0]}_{ts}_{idx}.jpg"
                     url = upload_image_to_storage(data['img'], fname)
-                    
                     doc = {
                         "original_filename": current_file['name'],
                         "drive_file_id": current_file['id'],
@@ -346,7 +320,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                 
                 if done_folder_id:
                     move_file_to_done(current_file['id'], folder_id, done_folder_id)
-                    st.toast("파일 이동 완료!")
+                    st.toast("완료!")
                     time.sleep(1)
                     st.session_state.pop('final_results', None)
                     st.session_state.pop('canvas_init', None)
