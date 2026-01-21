@@ -421,27 +421,30 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                 try:
                     local_vars = {}
                     
-                    # [Linus Coach Fix] exec 실행 전 plt.show()를 암살한다.
-                    # AI가 plt.show()를 써놨으면 Streamlit이 그걸 보고 st.pyplot을 호출해서 에러가 남.
+                    # [Linus Coach Fix 1] 좀비 코드 방지: plt.show() 주석 처리
+                    # AI가 plt.show()를 써놨으면 Streamlit이 그걸 보고 꼬일 수 있음
                     safe_code = diag_code.replace("plt.show()", "# plt.show()")
                     
                     # exec는 로컬 툴에서만 허용 (보안 유의)
                     exec(safe_code, globals(), local_vars)
                     
                     if 'fig' in local_vars:
-                        # 1. 메모리 버퍼 생성
+                        # [Linus Coach Fix 2] Matplotlib 3.9+ 호환성 완벽 해결 (Buffer 방식)
+                        # tostring_rgb() 같은 옛날 함수 대신 savefig()를 쓴다.
+                        
+                        # 1. 메모리 버퍼 생성 (가상의 파일)
                         buf = io.BytesIO()
                         
-                        # 2. 그래프를 버퍼에 PNG 포맷으로 저장
+                        # 2. 그래프를 버퍼에 PNG 포맷으로 저장 (고해상도, 여백 제거)
                         local_vars['fig'].savefig(buf, format="png", bbox_inches='tight', dpi=150)
                         
-                        # 3. 버퍼 포인터 리셋
+                        # 3. 버퍼 포인터를 맨 앞으로 되돌림 (읽기 준비)
                         buf.seek(0)
                         
-                        # 4. Streamlit 이미지로 출력
+                        # 4. Streamlit 이미지 함수로 출력
                         st.image(buf, width="stretch")
                         
-                        # 5. 메모리 해제
+                        # 5. 메모리 누수 방지를 위해 figure 닫기
                         plt.close(local_vars['fig'])
                         
                     else:
@@ -533,6 +536,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
