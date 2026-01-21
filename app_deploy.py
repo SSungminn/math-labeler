@@ -161,7 +161,7 @@ def upload_image_to_storage(image, filename):
 def extract_gemini(image, options_dict):
     """
     이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
-    Matplotlib 코드 생성을 강제하도록 프롬프트가 강화되었습니다.
+    LaTeX 백슬래시로 인한 JSON 파싱 오류를 자동으로 수정하는 로직이 포함되어 있습니다.
     """
     if "GEMINI_API_KEY" not in st.secrets:
         return {"error": "API Key Missing in Secrets"}
@@ -175,12 +175,11 @@ def extract_gemini(image, options_dict):
             "response_mime_type": "application/json"
         }
         
-        # 2.0 Flash가 코드를 잘 못 짜면 1.5 Pro로 변경 고려 (일단 Flash 유지)
         model = genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config) 
         
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
-        # [변경점] 프롬프트 강화: 조건부 삭제, 무조건 생성 지시, 예외 처리 추가
+        # 프롬프트는 기존 유지
         prompt = f"""
         당신은 한국의 수학 교육 전문가이자 Python Matplotlib 코딩 전문가입니다.
         제공된 수학 문제 이미지를 분석하여 다음 작업을 수행하고 JSON으로 반환하세요.
@@ -192,18 +191,15 @@ def extract_gemini(image, options_dict):
 
         [작업 2: 도형 설명 (diagram_desc)]
         - 시각장애인을 위해 그래프나 도형의 생김새를 한국어로 상세히 묘사하세요.
-        - "그림 참고"라고 하지 말고, "원점을 지나고 우상향하는 직선" 처럼 구체적으로 쓰세요.
 
         [작업 3: Python Matplotlib 코드 생성 (diagram_code)]
         - **매우 중요:** 이 필드는 절대로 비워둘 수 없습니다. ("" 금지)
         - 문제에 그래프, 도형, 함수식이 조금이라도 보인다면 그것을 그리는 코드를 작성하세요.
-        - **만약 그림이 없는 단순 계산 문제라면, 빈 좌표평면(x축, y축)이라도 그리는 코드를 반드시 넣으세요.**
-        - 코드는 반드시 `import matplotlib.pyplot as plt`와 `fig, ax = plt.subplots()`를 포함해야 합니다.
-        - 한글 폰트 문제는 피하기 위해 라벨은 영어나 수식($...$)만 사용하세요.
-        - JSON 문자열 안에 코드를 넣어야 하므로, 줄바꿈은 반드시 `\\n` 문자로 이스케이프 처리하여 한 줄로 작성되어야 합니다.
+        - 그림이 없는 단순 계산 문제라면, 빈 좌표평면(x축, y축)이라도 그리는 코드를 반드시 넣으세요.
+        - 코드는 `import matplotlib.pyplot as plt`와 `fig, ax = plt.subplots()`를 포함해야 합니다.
         - plt.show()는 절대 사용하지 마세요.
-        - **필수** LaTeX 수식이 포함된 라벨은 필수적으로!!!! **Raw String**을 사용해야 합니다.
-          (예: label='$y=\\frac{1}{2}x$' => label=r'$y=\\frac{1}{2}x$') -> r을 안 붙이면 오류가 발생합니다.
+        - **핵심:** LaTeX 수식이 포함된 라벨은 반드시 **Raw String**을 사용해야 합니다.
+          (예: label=r'$y=\\frac{{1}}{{2}}x$') -> r을 안 붙이면 오류가 발생합니다.
         - 줄바꿈은 `\\n`으로 이스케이프 처리하세요.
 
         [작업 4: 자동 분류]
@@ -212,9 +208,9 @@ def extract_gemini(image, options_dict):
 
         [응답 스키마 (JSON)]
         {{
-            "problem_text": "추출된 텍스트...",
-            "diagram_desc": "그래프 설명...",
-            "diagram_code": "import matplotlib.pyplot as plt\\nfig, ax = plt.subplots()\\n...",
+            "problem_text": "...",
+            "diagram_desc": "...",
+            "diagram_code": "...",
             "subject": "...",
             "unit_major": "...",
             "question_type": "...",
@@ -223,76 +219,38 @@ def extract_gemini(image, options_dict):
         }}
         """
         
-        response = model.generate_content([prompt, image])
-        text = response.text
-        
-        # Markdown 제거
-        clean_text = re.sub(r"```json|```", "", text).strip()
-            
-        return json.loads(clean_text)
-            
-    except Exception as e:
-        # 에러 발생 시에도 빈 값 대신 기본 템플릿 반환
-        return {
-            "error": f"Extraction Failed: {str(e)}", 
-            "problem_text": "", 
-            "diagram_code": "import matplotlib.pyplot as plt\nfig, ax = plt.subplots()\nax.text(0.5, 0.5, 'Error generating graph', ha='center')"
-        }
-    try:
-        # ... (모델 생성 및 프롬프트 코드 생략) ...
-        
-        response = model.generate_content([prompt, image])
-        text = response.text
-        
-        # [디버깅 1] 터미널(콘솔)에 강제로 찍어서 확인 (서버 로그용)
-        print("================ GEMINI RAW RESPONSE ================")
-        print(text)
-        print("=====================================================")
-
-        # 혹시 모를 마크다운 태그 제거
-        clean_text = re.sub(r"```json|```", "", text).strip()
-            
-        return json.loads(clean_text)
-            
-    except Exception as e:
-        # [디버깅 2] 에러가 나면 'raw_text' 키에 원본을 담아서 리턴
-        st.error(f"JSON 파싱 실패! 원본을 확인하세요.")
-        return {
-            "error": f"Extraction Failed: {str(e)}", 
-            "problem_text": "", 
-            "diagram_code": "",
-            "raw_text_debug": text if 'text' in locals() else "No text generated" # 원본 텍스트 반환
-        }
-    try:
         # 1. 모델 생성 요청
         response = model.generate_content([prompt, image])
         text = response.text
         
+        # [디버깅] 원본 텍스트 확인용
+        print("======== [Gemini Raw Response] ========")
+        print(text)
+        print("=======================================")
+
         # 2. 마크다운(```json) 제거
         clean_text = re.sub(r"```json|```", "", text).strip()
 
-        # 3. [핵심] JSON 파싱 시도 (실패 시 복구 로직 가동)
+        # 3. [핵심] JSON 파싱 및 자동 복구 로직
         try:
             return json.loads(clean_text)
         except json.JSONDecodeError as e:
-            # st.warning(f"1차 파싱 실패: {e}. 자동 복구를 시도합니다...") # 디버깅용
-            
-            # [복구 로직] Invalid Escape 문자만 찾아서 백슬래시를 하나 더 붙임
-            # 설명: JSON에서 허용된 이스케이프(\", \\, \/, \b, \f, \n, \r, \t, \u)가 
-            # *아닌* 백슬래시 뒤의 문자를 찾아서 이중 백슬래시로 치환
+            # 1차 파싱 실패 시: Invalid Escape 문자만 찾아서 백슬래시를 하나 더 붙임
+            # 설명: JSON 표준 이스케이프 문자(" \ / b f n r t u)가 *아닌* 백슬래시를 찾아서 이중으로 변경
+            # 예: \alpha -> \\alpha, \left -> \\left
             fixed_text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', clean_text)
             
             try:
                 return json.loads(fixed_text)
             except json.JSONDecodeError as e2:
-                # 복구도 실패하면 에러 리턴
+                # 복구도 실패하면 에러 리턴 및 원본 텍스트 반환
                 return {
-                    "error": f"JSON Parsing Failed (Final): {str(e2)}", 
+                    "error": f"JSON Parsing Failed: {str(e2)}", 
                     "problem_text": "", 
                     "diagram_code": "",
                     "raw_text_debug": clean_text
                 }
-
+            
     except Exception as e:
         return {
             "error": f"Extraction Logic Failed: {str(e)}", 
@@ -554,6 +512,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
