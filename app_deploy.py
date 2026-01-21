@@ -317,15 +317,14 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
     if 'extracted' in st.session_state:
         item = st.session_state['extracted']
         
-        # 기본값 로드
+        # 기본값 로드 (수정 중인 데이터가 날아가지 않게 session state 활용)
         default_prob = item.get('problem_text', "")
         default_code = item.get('diagram_code', "")
         
         st.divider()
         st.subheader("📝 데이터 검증 및 저장")
 
-        # [변경] st.form을 제거하여 실시간 인터랙션 허용
-        # 1. 메타데이터 선택 (즉시 반영되어도 상관없음)
+        # 1. 메타데이터 선택 (즉시 반영)
         c1, c2, c3, c4 = st.columns(4)
         subject = c1.selectbox("과목", OPTIONS['subject'], index=get_index_or_default(OPTIONS['subject'], item.get("subject")))
         grade = c2.selectbox("학년", OPTIONS['grade'], index=0)
@@ -339,101 +338,123 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
         st.markdown("---")
 
-        # 2. 실시간 편집 & 미리보기 (Editor & Preview)
+        # 2. 실시간 편집 & 미리보기
         col_edit, col_preview = st.columns(2)
         
         with col_edit:
             st.markdown("#### ✏️ 편집기")
-            # 문제 텍스트 수정
             prob_text = st.text_area("문제 (LaTeX)", value=default_prob, height=300, key="prob_input")
-            
-            # 그래프 코드 수정
             st.caption("도형 Python 코드")
             diag_code = st.text_area("Matplotlib Code", value=default_code, height=200, key="code_input")
-            
-            # 도형 설명 텍스트
             diag_desc = st.text_area("도형 설명 (텍스트)", value=item.get('diagram_desc', ""), height=100)
 
         with col_preview:
             st.markdown("#### 👁️ 미리보기")
-            
-            # (A) 텍스트 렌더링
             if prob_text:
                 st.info("수식 렌더링 확인")
                 st.markdown(prob_text)
             else:
                 st.warning("텍스트가 없습니다.")
             
-            # (B) 그래프 렌더링 (자동 실행)
             if diag_code and "plt" in diag_code:
                 st.markdown("---")
                 st.info("📊 그래프 렌더링 확인")
                 try:
                     local_vars = {}
-                    # exec는 안전하지 않지만, 내부 도구이므로 허용
+                    # exec는 로컬 툴에서만 허용
                     exec(diag_code, globals(), local_vars)
                     if 'fig' in local_vars:
                         st.pyplot(local_vars['fig'])
                     else:
-                        st.warning("코드는 실행됐으나 'fig' 변수가 없습니다.")
+                        st.warning("코드 실행됨 (fig 객체 없음)")
                 except Exception as e:
                     st.error(f"그래프 오류: {e}")
 
         st.markdown("---")
         
-        # 3. 최종 저장 버튼 (이것만 버튼으로 처리)
-        # form이 없으므로 모든 변수(prob_text, diag_code 등)는 현재 상태값을 그대로 가져감
-        if st.button("🔥 저장 및 파일 이동 (Save & Move)", type="primary", use_container_width=True):
-            if 'cropped_img' not in st.session_state:
-                st.error("이미지 세션이 만료되었습니다.")
-            else:
-                try:
-                    with st.spinner("데이터 저장 중..."):
-                        # 이미지 업로드
-                        timestamp = int(time.time())
-                        clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', current_file['name'].rsplit('.', 1)[0])
-                        img_filename = f"{clean_name}_{timestamp}.jpg"
-                        img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
-                        
-                        # Firestore 저장
-                        doc_data = {
-                            "original_filename": current_file['name'],
-                            "drive_file_id": current_file['id'],
-                            "image_url": img_url,
-                            "storage_path": f"cropped_problems/{img_filename}",
-                            "meta": {
-                                "subject": subject, "grade": grade, "source": source,
-                                "unit": unit, "difficulty": diff, "question_type": q_type,
-                                "concept": concept
-                            },
-                            # 코드 데이터도 같이 저장
-                            "content": {
-                                "problem": prob_text, 
-                                "diagram_desc": diag_desc,
-                                "diagram_code": diag_code  # 코드 저장
-                            },
-                            "created_at": firestore.SERVER_TIMESTAMP,
-                            "labeler_version": "v3.1-live-preview"
-                        }
-                        db.collection("math_dataset").add(doc_data)
-                        
-                        # 파일 이동
-                        if done_folder_id:
-                            move_file_to_done(current_file['id'], folder_id, done_folder_id)
-                            st.toast("✅ 저장 완료!")
+        # ==========================================
+        # 3. 버튼 분리 (핵심 변경 사항)
+        # ==========================================
+        col_btn_save, col_btn_move = st.columns([1, 1])
+
+        # [버튼 1] 데이터 저장만 수행 (이동 X, 리프레시 X)
+        with col_btn_save:
+            if st.button("💾 데이터 저장 (DB Save)", type="secondary", use_container_width=True):
+                if 'cropped_img' not in st.session_state:
+                    st.error("이미지 세션 만료")
+                else:
+                    try:
+                        with st.spinner("데이터베이스에 저장 중..."):
+                            # 1. 이미지 업로드
+                            timestamp = int(time.time())
+                            clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', current_file['name'].rsplit('.', 1)[0])
+                            img_filename = f"{clean_name}_{timestamp}.jpg"
+                            img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
+                            
+                            # 2. Firestore 저장
+                            doc_data = {
+                                "original_filename": current_file['name'],
+                                "drive_file_id": current_file['id'],
+                                "image_url": img_url,
+                                "storage_path": f"cropped_problems/{img_filename}",
+                                "meta": {
+                                    "subject": subject, "grade": grade, "source": source,
+                                    "unit": unit, "difficulty": diff, "question_type": q_type,
+                                    "concept": concept
+                                },
+                                "content": {
+                                    "problem": prob_text, 
+                                    "diagram_desc": diag_desc,
+                                    "diagram_code": diag_code
+                                },
+                                "created_at": firestore.SERVER_TIMESTAMP,
+                                "labeler_version": "v3.2-split-actions"
+                            }
+                            db.collection("math_dataset").add(doc_data)
+                            
+                            # 성공 표시 (저장되었다는 플래그 설정)
+                            st.session_state['is_saved'] = True
+                            st.toast("✅ 데이터가 안전하게 저장되었습니다!", icon="💾")
+                            st.success("저장 완료. 더 수정하거나 '완료 처리'를 눌러 넘어가세요.")
+                            
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+        # [버튼 2] 파일 이동 및 다음 사진 (저장 로직 없음)
+        with col_btn_move:
+            # 저장을 안 했으면 경고를 띄워주기 위해 help 메시지 추가
+            btn_label = "✅ 완료 및 다음 파일 (Move & Next)"
+            if not st.session_state.get('is_saved', False):
+                btn_label += " [⚠️미저장 상태]"
+            
+            if st.button(btn_label, type="primary", use_container_width=True):
+                # 안전장치: 저장을 안 했는데 이동하려고 하면 경고
+                if not st.session_state.get('is_saved', False):
+                    st.warning("⚠️ 데이터를 아직 저장하지 않았습니다! 먼저 '데이터 저장'을 눌러주세요.")
+                    st.stop()
+                
+                if done_folder_id:
+                    with st.spinner("파일 정리 중..."):
+                        success = move_file_to_done(current_file['id'], folder_id, done_folder_id)
+                        if success:
+                            st.toast("🚀 파일 이동 완료! 다음 문제로 넘어갑니다.")
+                            # 로컬 리스트 업데이트
                             st.session_state['drive_files'].pop(idx)
+                            # 상태 초기화
                             st.session_state.pop('cropped_img', None)
                             st.session_state.pop('extracted', None)
-                            time.sleep(1)
+                            st.session_state.pop('is_saved', None) # 저장 플래그 초기화
+                            
+                            time.sleep(0.5)
                             st.rerun()
                         else:
-                            st.success("저장 완료 (파일 이동 안 함)")
-                            
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
+                            st.error("파일 이동 실패 (권한을 확인하세요)")
+                else:
+                    st.error("완료 폴더(Done Folder ID)가 설정되지 않았습니다.")
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
