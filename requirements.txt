@@ -5,4 +5,6 @@ google-auth-httplib2
 google-auth-oauthlib
 google-generativeai
 streamlit-cropper
+streamlit-drawable-canvas
 Pillow
+
