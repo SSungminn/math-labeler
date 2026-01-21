@@ -201,6 +201,10 @@ def extract_gemini(image, options_dict):
         - 코드는 반드시 `import matplotlib.pyplot as plt`와 `fig, ax = plt.subplots()`를 포함해야 합니다.
         - 한글 폰트 문제는 피하기 위해 라벨은 영어나 수식($...$)만 사용하세요.
         - JSON 문자열 안에 코드를 넣어야 하므로, 줄바꿈은 반드시 `\\n` 문자로 이스케이프 처리하여 한 줄로 작성되어야 합니다.
+        - plt.show()는 절대 사용하지 마세요.
+        - **핵심:** LaTeX 수식이 포함된 라벨은 반드시 **Raw String**을 사용해야 합니다.
+          (예: label=r'$y=\\frac{1}{2}x$') -> r을 안 붙이면 오류가 발생합니다.
+        - 줄바꿈은 `\\n`으로 이스케이프 처리하세요.
 
         [작업 4: 자동 분류]
         - 아래 리스트에서 가장 적절한 값을 선택하세요:
@@ -513,6 +517,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
