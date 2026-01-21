@@ -160,7 +160,7 @@ def upload_image_to_storage(image, filename):
 def extract_gemini(image, options_dict):
     """
     이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
-    JSON 모드를 강제하여 응답 누락을 방지합니다.
+    한국어 설명 강제 및 텍스트 기반 그래프 생성 로직이 강화되었습니다.
     """
     if "GEMINI_API_KEY" not in st.secrets:
         return {"error": "API Key Missing in Secrets"}
@@ -168,9 +168,9 @@ def extract_gemini(image, options_dict):
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         
-        # [핵심 1] JSON 응답 강제 설정 (Gemini 1.5 Pro/Flash 이상 지원)
+        # JSON 모드 유지 (데이터 구조 깨짐 방지)
         generation_config = {
-            "temperature": 0.2, # 창의성 낮춤 (정확도 위주)
+            "temperature": 0.1, # 창의성 최소화 (정확도 극대화)
             "response_mime_type": "application/json"
         }
         
@@ -178,52 +178,51 @@ def extract_gemini(image, options_dict):
         
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
+        # [변경점] 프롬프트를 명확한 지시사항으로 변경
         prompt = f"""
-        You are a highly skilled Math Data Engineer. 
-        Analyze the math problem image and output a JSON object.
+        당신은 한국의 수학 교육 전문가이자 Python 개발자입니다.
+        제공된 수학 문제 이미지를 분석하여 다음 3가지 작업을 수행하고 JSON으로 반환하세요.
 
-        [Task 1: Math LaTeX Extraction]
-        - Convert all math expressions to LaTeX wrapped in single dollar signs (e.g., $y=x^2$).
-        - Use `\\frac{{a}}{{b}}` for fractions.
-        - Keep the Korean text exactly as is.
+        [작업 1: 텍스트 및 수식 추출]
+        - 문제의 모든 텍스트를 한국어 그대로 추출하세요.
+        - 수식은 반드시 LaTeX 포맷($...$)을 사용하세요. (예: $y=2x+k$)
+        - 분수는 `\\frac{{a}}{{b}}` 형태를 유지하세요.
 
-        [Task 2: Python Matplotlib Code Generation]
-        - IF the problem involves graphs (functions, geometry, curves), you MUST generate Python code to visualize it.
-        - Code requirements:
-          1. Start with `import matplotlib.pyplot as plt`
-          2. Use `fig, ax = plt.subplots()`
-          3. Plot the functions described in the problem accurately.
-          4. Do NOT use Korean fonts (use English labels or no labels).
-          5. Store the entire code as a single string in the `diagram_code` field (use \\n for newlines).
-        - If NO diagram is needed, return empty string "".
+        [작업 2: 도형 설명 (diagram_desc)]
+        - 도형이나 그래프의 개형, 교점의 위치, 축과의 관계 등을 **반드시 '한국어'로** 자세히 서술하세요.
+        - 영어를 사용하지 마세요.
 
-        [Task 3: Classification]
-        - Select the best fit from the provided list:
+        [작업 3: Python Matplotlib 코드 생성 (diagram_code)]
+        - **중요:** 문제 텍스트에 함수식(예: $y=f(x)$)이나 도형이 언급되어 있다면, 이를 시각화하는 파이썬 코드를 **무조건** 작성해야 합니다.
+        - 코드는 `import matplotlib.pyplot as plt`로 시작해야 합니다.
+        - `fig, ax = plt.subplots()`를 사용하여 객체를 생성하세요.
+        - 한글 폰트 깨짐 방지를 위해 그래프 내 라벨(title, label 등)은 영어나 수식($...$)만 사용하거나 생략하세요.
+        - `k` 같은 미지수가 있다면 임의의 값(예: k=1)을 가정하고 주석을 다세요.
+
+        [작업 4: 자동 분류]
+        - 아래 리스트에서 가장 적절한 값을 선택하세요:
         {options_str}
 
-        [Response Schema (JSON Example)]
+        [응답 스키마 (JSON)]
         {{
-            "problem_text": "함수 $f(x)=x^2$에 대하여...",
-            "diagram_code": "import matplotlib.pyplot as plt\\nimport numpy as np\\n\\nfig, ax = plt.subplots()\\nx = np.linspace(-5, 5, 100)\\nax.plot(x, x**2)\\n",
-            "diagram_desc": "이차함수 그래프가 원점을 지나고...",
-            "subject": "수학II",
-            "unit_major": "미분법",
-            "question_type": "계산형",
-            "concept": "미분계수의 정의",
-            "difficulty": "중"
+            "problem_text": "추출된 문제 내용...",
+            "diagram_desc": "이 지수함수 그래프는 점 P, Q에서 직선과 만나며...",
+            "diagram_code": "import matplotlib.pyplot as plt\\nimport numpy as np\\n...",
+            "subject": "...",
+            "unit_major": "...",
+            "question_type": "...",
+            "concept": "...",
+            "difficulty": "..."
         }}
         """
         
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # JSON 모드를 썼지만 혹시 모를 마크다운 제거
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0]
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0]
+        # 혹시 모를 마크다운 태그 제거
+        clean_text = re.sub(r"```json|```", "", text).strip()
             
-        return json.loads(text)
+        return json.loads(clean_text)
             
     except Exception as e:
         return {"error": f"Extraction Failed: {str(e)}", "problem_text": "", "diagram_code": ""}
@@ -472,6 +471,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
