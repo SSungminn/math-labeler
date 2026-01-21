@@ -350,9 +350,18 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
             if st.button("✨ AI 분석 및 자동 분류", type="primary"):
                 with st.spinner("Gemini가 문제를 풀고 분류 중입니다..."):
                     st.session_state['cropped_img'] = cropped_img
-                    # 옵션 전체를 전달하여 AI가 판단하게 함
+                    
                     extracted_data = extract_gemini(cropped_img, OPTIONS)
                     
+                    # [디버깅 3] 화면에 디버그용 확장 패널 추가
+                    with st.expander("🕵️‍♂️ AI 응답 데이터 뜯어보기 (Debug)", expanded=True):
+                        st.json(extracted_data) # JSON 구조를 예쁘게 보여줌
+                        
+                        # 만약 에러가 나서 raw_text_debug가 있다면 원본 텍스트 출력
+                        if "raw_text_debug" in extracted_data:
+                            st.warning("⚠️ 파싱 실패한 원본 텍스트:")
+                            st.code(extracted_data["raw_text_debug"], language="text")
+
                     if "error" in extracted_data:
                         st.error(extracted_data['error'])
                     else:
@@ -503,6 +512,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
