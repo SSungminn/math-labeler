@@ -25,7 +25,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # ==========================================
 # 1. 설정 및 인증 (Configuration & Auth)
 # ==========================================
-st.set_page_config(layout="wide", page_title="Cloud Math Labeler")
+st.set_page_config(layout="wide", page_title="Cloud Math Labeler AI+")
 
 @st.cache_resource
 def init_firebase():
@@ -52,18 +52,14 @@ def init_firebase():
 @st.cache_resource
 def get_drive_service():
     """
-    구글 드라이브 인증을 수행하고 서비스 객체를 캐싱합니다.
-    token_uri 누락으로 인한 'No access token' 오류를 방지하는 패치가 포함되어 있습니다.
+    구글 드라이브 인증. token_uri 누락 패치 포함.
     """
     SCOPES = ['https://www.googleapis.com/auth/drive']
     creds = None
     
     try:
         if "firebase" in st.secrets:
-            # 1. secrets를 딕셔너리로 변환
             key_dict = dict(st.secrets["firebase"])
-            
-            # 2. [중요] token_uri가 없다면 강제로 주입 (이게 없으면 인증이 깨짐)
             if "token_uri" not in key_dict:
                 key_dict["token_uri"] = "https://oauth2.googleapis.com/token"
             
@@ -94,20 +90,21 @@ if not db or not drive_service:
 # 2. 로직 및 데이터 처리
 # ==========================================
 
+# 분류 옵션 정의
 OPTIONS = {
-    "subject": ["수학II", "수학I", "미적분", "확률과통계", "기하", "공통수학"],
+    "subject": ["수학II", "수학I", "미적분", "확률과통계", "기하", "공통수학", "중등수학"],
     "grade": ["고2", "고1", "고3", "N수", "중등"],
     "unit_major": [
         "함수의 극한과 연속", "미분법", "적분법", 
         "지수함수와 로그함수", "삼각함수", "수열",
         "순열과 조합", "확률", "통계",
         "이차곡선", "평면벡터", "공간도형과 공간좌표",
-        "다항식", "방정식과 부등식", "행렬", "기타"
+        "다항식", "방정식과 부등식", "행렬", "집합과 명제", "함수", "기타"
     ],
     "difficulty": ["상", "최상(Killer)", "중", "하", "최하"],
     "question_type": ["추론형", "계산형", "이해형", "문제해결형", "합답형"],
     "source_org": ["평가원", "교육청", "사관학교/경찰대", "EBS", "내신", "기타"],
-    "concepts": ["샌드위치 정리", "절댓값 함수", "미분계수의 정의", "평균값 정리", "롤의 정리", "사이값 정리", "극대/극소", "변곡점", "정적분 정의", "부분적분", "치환적분", "도함수 활용", "기타"] 
+    "concepts": ["샌드위치 정리", "절댓값 함수", "미분계수의 정의", "평균값 정리", "롤의 정리", "사이값 정리", "극대/극소", "변곡점", "정적분 정의", "부분적분", "치환적분", "도함수 활용", "삼수선의 정리", "기타"] 
 }
 
 def list_drive_images(folder_id):
@@ -160,42 +157,72 @@ def upload_image_to_storage(image, filename):
     blob.make_public()
     return blob.public_url
 
-def extract_gemini(image):
+def extract_gemini(image, options_dict):
+    """
+    이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
+    options_dict를 프롬프트에 포함시켜 AI가 선택지 내에서 답을 고르도록 유도합니다.
+    """
     if "GEMINI_API_KEY" not in st.secrets:
         return {"error": "API Key Missing in Secrets"}
 
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # 속도와 비용 효율성을 위해 flash 모델 권장
         model = genai.GenerativeModel("gemini-2.0-flash") 
         
-        # [수정됨] 프롬프트를 한글로 변경하여 한국어 출력을 강제함
-        prompt = """
-        이 수학 문제 이미지를 분석하세요.
-        1. 수식은 LaTeX 포맷($...$)으로 변환하고, 문제 텍스트는 이미지에 있는 그대로(한국어 포함) 추출하세요.
-        2. 도형이나 그래프에 대한 설명(diagram_desc)은 반드시 '한국어'로 자세히 묘사하세요.
-        3. 결과는 반드시 다음 키를 가진 JSON 객체로만 반환하세요: "problem_text", "diagram_desc".
+        # 옵션 리스트를 문자열로 변환하여 프롬프트에 주입
+        options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
+
+        prompt = f"""
+        당신은 한국의 고등학교 수학 전문가입니다. 이 수학 문제 이미지를 완벽하게 분석하세요.
+        
+        [지시사항]
+        1. **수식 추출**: 모든 수식은 LaTeX 포맷($...$)으로 변환하세요.
+        2. **문제 텍스트**: 문제의 지문 내용을 한국어 그대로 추출하세요.
+        3. **도형 설명**: 도형이나 그래프가 있다면 'diagram_desc'에 한국어로 자세히 묘사하세요.
+        4. **자동 분류**: 아래 제공된 [분류 리스트]를 참고하여, 이 문제에 가장 적합한 항목을 하나씩 선택하세요.
+           (반드시 리스트 안에 있는 단어만 사용해야 합니다.)
+
+        [분류 리스트]
+        {options_str}
+
+        [출력 포맷]
+        반드시 아래의 JSON 형식으로만 출력하세요 (마크다운 없이 순수 JSON):
+        {{
+            "problem_text": "추출된 문제 내용...",
+            "diagram_desc": "도형 설명...",
+            "subject": "분류 리스트의 subject 중 택1",
+            "unit_major": "분류 리스트의 unit_major 중 택1",
+            "question_type": "분류 리스트의 question_type 중 택1",
+            "concept": "분류 리스트의 concepts 중 택1 (없으면 '기타')",
+            "difficulty": "분류 리스트의 difficulty 중 택1 (추정)"
+        }}
         """
         
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # 견고한 JSON 파싱 (Regex 사용)
+        # JSON 파싱
         json_match = re.search(r"\{.*\}", text, re.DOTALL)
         if json_match:
             clean_json = json_match.group(0)
             return json.loads(clean_json)
         else:
-            # JSON 파싱 실패 시 원문 반환
-            return {"problem_text": text, "diagram_desc": "자동 추출 형식이 올바르지 않음."}
+            return {"problem_text": text, "diagram_desc": "JSON 파싱 실패", "error": "Format Error"}
             
     except Exception as e:
         return {"error": str(e)}
 
+def get_index_or_default(options_list, value, default_index=0):
+    """AI가 예측한 값이 리스트에 있으면 그 인덱스를 반환, 없으면 0 반환"""
+    try:
+        return options_list.index(value)
+    except ValueError:
+        return default_index
+
 # ==========================================
 # 3. 메인 UI 레이아웃
 # ==========================================
-st.title("✂️ Cloud Math Cropper & Labeler")
+st.title("✂️ Smart Math Labeler (AI Classification)")
 
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -204,7 +231,7 @@ with st.sidebar:
     done_folder_default = st.secrets.get("DONE_FOLDER_ID", "")
     
     folder_id = st.text_input("작업 폴더 ID (Source)", value=default_folder)
-    done_folder_id = st.text_input("완료 폴더 ID (Done)", value=done_folder_default, placeholder="처리 후 이동할 폴더 ID")
+    done_folder_id = st.text_input("완료 폴더 ID (Done)", value=done_folder_default)
     
     if st.button("📂 드라이브 불러오기", type="primary"):
         if folder_id:
@@ -212,16 +239,14 @@ with st.sidebar:
                 files = list_drive_images(folder_id)
                 st.session_state['drive_files'] = files
                 st.session_state['idx'] = 0
-                # 이전 상태 초기화
                 st.session_state.pop('cropped_img', None)
                 st.session_state.pop('extracted', None)
                 st.success(f"{len(files)}개 이미지 발견!")
         else:
-            st.warning("작업 폴더 ID를 입력해주세요.")
+            st.warning("폴더 ID를 입력하세요.")
 
     st.markdown("---")
     
-    # 네비게이션
     c_prev, c_next = st.columns(2)
     with c_prev:
         if st.button("◀ 이전"):
@@ -230,7 +255,6 @@ with st.sidebar:
                 st.session_state.pop('cropped_img', None)
                 st.session_state.pop('extracted', None)
                 st.rerun()
-                
     with c_next:
         if st.button("다음 ▶"):
             files = st.session_state.get('drive_files', [])
@@ -247,33 +271,24 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
     files = st.session_state['drive_files']
     idx = st.session_state['idx']
     
-    # 인덱스 범위 안전장치 (파일 이동 후 리스트 변경 시 에러 방지)
     if idx >= len(files):
-        st.warning("파일 목록이 변경되었습니다. 인덱스를 초기화합니다.")
         st.session_state['idx'] = 0
         st.rerun()
         
     current_file = files[idx]
-    
     st.subheader(f"🖼️ [{idx+1}/{len(files)}] {current_file['name']}")
     
-    # 이미지 로드 (세션 상태에 캐싱하여 불필요한 재다운로드 방지)
     if 'current_file_id' not in st.session_state or st.session_state['current_file_id'] != current_file['id']:
-        with st.spinner("이미지 다운로드 중..."):
+        with st.spinner("이미지 로딩 중..."):
             img = download_image_from_drive(current_file['id'])
             if img:
                 st.session_state['original_img'] = img
                 st.session_state['current_file_id'] = current_file['id']
-                # 새 이미지 로드 시 하위 상태 초기화
                 st.session_state.pop('cropped_img', None)
                 st.session_state.pop('extracted', None)
-            else:
-                st.error("이미지를 불러오지 못했습니다. 다음 파일로 넘어가주세요.")
     
     if 'original_img' in st.session_state:
-        # 크롭 도구
-        st.info("💡 마우스로 문제 영역을 드래그해서 선택하세요.")
-        
+        st.info("💡 문제 영역을 드래그하세요.")
         cropped_img = st_cropper(
             st.session_state['original_img'],
             realtime_update=True,
@@ -282,17 +297,14 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         )
         
         col_view, col_action = st.columns([1, 1])
-        
         with col_view:
-            st.markdown("##### ✂️ 선택된 영역 미리보기")
             st.image(cropped_img, use_container_width=True)
-            
         with col_action:
-            st.markdown("##### ⚡ AI 분석")
-            if st.button("✨ 선택 영역 분석하기", type="primary"):
-                with st.spinner("Gemini가 분석 중입니다..."):
+            if st.button("✨ AI 분석 및 자동 분류", type="primary"):
+                with st.spinner("Gemini가 문제를 풀고 분류 중입니다..."):
                     st.session_state['cropped_img'] = cropped_img
-                    extracted_data = extract_gemini(cropped_img)
+                    # 옵션 전체를 전달하여 AI가 판단하게 함
+                    extracted_data = extract_gemini(cropped_img, OPTIONS)
                     
                     if "error" in extracted_data:
                         st.error(extracted_data['error'])
@@ -302,47 +314,46 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
     st.divider()
 
-    # 데이터 확인 및 저장 폼
     if 'extracted' in st.session_state:
         item = st.session_state['extracted']
         
+        # AI 예측값 가져오기 (없으면 기본값)
+        pred_subject = item.get("subject", OPTIONS['subject'][0])
+        pred_unit = item.get("unit_major", OPTIONS['unit_major'][0])
+        pred_type = item.get("question_type", OPTIONS['question_type'][0])
+        pred_concept = item.get("concept", OPTIONS['concepts'][-1]) # 기본값 기타
+        pred_diff = item.get("difficulty", "중")
+
         with st.form("labeling_form"):
-            st.subheader("📝 데이터 검증 및 저장")
+            st.subheader("📝 AI 자동 분류 결과 확인")
             
+            # AI가 예측한 인덱스를 기본값으로 설정
             r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            subject = r1c1.selectbox("과목", OPTIONS['subject'])
-            grade = r1c2.selectbox("학년", OPTIONS['grade'])
-            source = r1c3.selectbox("출처", OPTIONS['source_org'])
-            unit = r1c4.selectbox("단원", OPTIONS['unit_major'])
+            subject = r1c1.selectbox("과목", OPTIONS['subject'], index=get_index_or_default(OPTIONS['subject'], pred_subject))
+            grade = r1c2.selectbox("학년", OPTIONS['grade'], index=0) # 학년은 이미지로 알기 어려움
+            source = r1c3.selectbox("출처", OPTIONS['source_org'], index=0) # 출처도 알기 어려움
+            unit = r1c4.selectbox("단원", OPTIONS['unit_major'], index=get_index_or_default(OPTIONS['unit_major'], pred_unit))
             
             r2c1, r2c2, r2c3 = st.columns(3)
-            diff = r2c1.selectbox("난이도", OPTIONS['difficulty'])
-            q_type = r2c2.selectbox("유형", OPTIONS['question_type'])
-            concept = r2c3.selectbox("핵심 개념", OPTIONS['concepts'])
+            diff = r2c1.selectbox("난이도", OPTIONS['difficulty'], index=get_index_or_default(OPTIONS['difficulty'], pred_diff))
+            q_type = r2c2.selectbox("유형", OPTIONS['question_type'], index=get_index_or_default(OPTIONS['question_type'], pred_type))
+            concept = r2c3.selectbox("핵심 개념", OPTIONS['concepts'], index=get_index_or_default(OPTIONS['concepts'], pred_concept))
             
             st.markdown("---")
             prob_text = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=200)
             diag_desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=100)
             
-            submit_btn = st.form_submit_button("🔥 저장 및 이동 (Save & Move)")
-            
-            if submit_btn:
+            if st.form_submit_button("🔥 저장 및 파일 이동"):
                 if 'cropped_img' not in st.session_state:
-                    st.error("자른 이미지가 없습니다. 다시 선택해주세요.")
+                    st.error("이미지 없음")
                 else:
                     try:
-                        # 1. 스토리지 업로드
-                        with st.spinner("1. 이미지 업로드 중..."):
+                        with st.spinner("업로드 및 저장 중..."):
                             timestamp = int(time.time())
-                            clean_name = current_file['name'].rsplit('.', 1)[0]
-                            # 파일명 정제 (특수문자 제거)
-                            clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', clean_name)
+                            clean_name = re.sub(r'[^a-zA-Z0-9가-힣_-]', '', current_file['name'].rsplit('.', 1)[0])
                             img_filename = f"{clean_name}_{timestamp}.jpg"
-                            
                             img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
                         
-                        # 2. 메타데이터 저장
-                        with st.spinner("2. 데이터베이스 저장 중..."):
                             doc_data = {
                                 "original_filename": current_file['name'],
                                 "drive_file_id": current_file['id'],
@@ -355,31 +366,22 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                                 },
                                 "content": {"problem": prob_text, "diagram": diag_desc},
                                 "created_at": firestore.SERVER_TIMESTAMP,
-                                "labeler_version": "v2.0-korean-optimized"
+                                "labeler_version": "v3.0-ai-auto-class"
                             }
                             db.collection("math_dataset").add(doc_data)
                             
-                        # 3. 파일 이동
                         if done_folder_id:
-                            with st.spinner("3. 완료 폴더로 이동 중..."):
-                                success = move_file_to_done(current_file['id'], folder_id, done_folder_id)
-                                if success:
-                                    st.toast("✅ 저장 및 파일 이동 완료!")
-                                    # 로컬 리스트 업데이트 (인덱스 유지하면서 항목 제거)
-                                    st.session_state['drive_files'].pop(idx)
-                                    # 상태 정리
-                                    st.session_state.pop('cropped_img', None)
-                                    st.session_state.pop('extracted', None)
-                                    # 리스트가 줄어들었으므로 인덱스 증가 없이 리로드
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    st.error("저장은 완료되었으나 드라이브 파일 이동에 실패했습니다.")
+                            move_file_to_done(current_file['id'], folder_id, done_folder_id)
+                            st.toast("✅ 저장 완료!")
+                            st.session_state['drive_files'].pop(idx)
+                            st.session_state.pop('cropped_img', None)
+                            st.session_state.pop('extracted', None)
+                            time.sleep(1)
+                            st.rerun()
                         else:
-                            st.warning("저장은 완료되었으나 '완료 폴더 ID'가 없어 파일 이동은 하지 않았습니다.")
-                            
+                            st.warning("저장됨 (파일 이동 안함)")
                     except Exception as e:
-                        st.error(f"저장 실패: {e}")
+                        st.error(f"Error: {e}")
 
 else:
-    st.info("👈 왼쪽 사이드바에서 드라이브를 연결해주세요.")
+    st.info("👈 드라이브 연결 필요")
