@@ -10,7 +10,8 @@ import os
 import google.generativeai as genai
 from PIL import Image
 import time
-from streamlit_drawable_canvas import st_canvas # 다중 박스 수정을 위한 라이브러리
+from streamlit_drawable_canvas import st_canvas
+import numpy as np # 리사이징 계산용
 
 # ==========================================
 # 0. 사용자 설정
@@ -84,7 +85,11 @@ def download_image_from_drive(file_id):
     while done is False:
         status, done = downloader.next_chunk()
     file_obj.seek(0)
-    return Image.open(file_obj)
+    img = Image.open(file_obj)
+    # RGBA(투명) 이미지는 JPG 저장 시 에러나므로 RGB로 변환
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    return img
 
 def move_file_to_done(file_id, current_folder_id, done_folder_id):
     try:
@@ -104,7 +109,6 @@ def upload_image_to_storage(image, filename):
     blob.make_public()
     return blob.public_url
 
-# 1. AI에게 좌표만 물어보는 함수
 def suggest_boxes_gemini(image, count):
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
@@ -114,7 +118,6 @@ def suggest_boxes_gemini(image, count):
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash-exp")
-        
         prompt = f"""
         Find exactly {count} math problems in this image.
         Return ONLY a JSON list of bounding boxes in [ymin, xmin, ymax, xmax] format (scale 0-1000).
@@ -124,15 +127,13 @@ def suggest_boxes_gemini(image, count):
         text = response.text.replace("```json", "").replace("```", "")
         return json.loads(text)
     except:
-        return [] # 실패하면 빈 리스트
+        return []
 
-# 2. 잘린 이미지를 분석하는 함수
 def analyze_cropped_image(image):
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
-    
     prompt = """
     Analyze this math problem.
     1. Convert content to LaTeX.
@@ -164,12 +165,11 @@ with st.sidebar:
             st.session_state['idx'] = 0
 
     st.markdown("---")
-    # 네비게이션
     c1, c2 = st.columns(2)
     if c1.button("◀ 이전"):
         if st.session_state.get('idx', 0) > 0:
             st.session_state['idx'] -= 1
-            st.session_state.pop('canvas_init', None) # 캔버스 초기화
+            st.session_state.pop('canvas_init', None)
             st.session_state.pop('final_results', None)
             st.rerun()
             
@@ -200,6 +200,14 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
     original_img = st.session_state['original_img']
     img_w, img_h = original_img.size
 
+    # [핵심 변경] 캔버스 표시용 리사이징 (너비 600px 고정)
+    CANVAS_WIDTH = 600
+    scale_factor = img_w / CANVAS_WIDTH
+    canvas_height = int(img_h / scale_factor)
+    
+    # 캔버스용 이미지 생성 (Resized)
+    resized_img = original_img.resize((CANVAS_WIDTH, canvas_height))
+
     # ==========================================
     # Step 1: AI 제안 및 캔버스 설정
     # ==========================================
@@ -210,24 +218,23 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
         prob_count = st.number_input("문제 개수", min_value=1, max_value=10, value=2)
         
         # [AI 제안 버튼]
-        if st.button("🤖 AI 영역 제안 (Suggest)"):
+        if st.button("🤖 AI 영역 제안"):
             with st.spinner("AI가 문제 위치를 찾고 있습니다..."):
                 boxes = suggest_boxes_gemini(original_img, prob_count)
                 
-                # Canvas용 JSON 데이터 생성
                 initial_objects = []
                 for box in boxes:
-                    # Gemini [ymin, xmin, ymax, xmax] (0-1000) -> Canvas (Pixel)
+                    # Gemini [ymin, xmin, ymax, xmax] (0-1000)
                     ymin, xmin, ymax, xmax = box
-                    # 캔버스 너비는 기본 600px로 잡음. 비율 계산 필요.
-                    # 여기서는 간단하게 원본 비율대로 넣고, 캔버스가 알아서 스케일링하게 함
+                    
+                    # 1000분율 -> 캔버스 픽셀(600px 기준)로 변환
                     rect = {
                         "type": "rect",
-                        "left": xmin / 1000 * 600, # 캔버스 기준 좌표 (가로 600 가정)
-                        "top": ymin / 1000 * (600 * img_h / img_w),
-                        "width": (xmax - xmin) / 1000 * 600,
-                        "height": (ymax - ymin) / 1000 * (600 * img_h / img_w),
-                        "fill": "rgba(255, 165, 0, 0.3)", # 투명한 주황색
+                        "left": xmin / 1000 * CANVAS_WIDTH,
+                        "top": ymin / 1000 * canvas_height,
+                        "width": (xmax - xmin) / 1000 * CANVAS_WIDTH,
+                        "height": (ymax - ymin) / 1000 * canvas_height,
+                        "fill": "rgba(255, 165, 0, 0.3)",
                         "stroke": "#FF0000",
                         "strokeWidth": 2
                     }
@@ -238,29 +245,26 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                     "objects": initial_objects
                 }
         
-        st.info("👉 오른쪽 이미지에서 박스를 자유롭게 수정하세요. (이동/크기조절)")
+        st.info("👉 오른쪽에서 박스를 수정하세요.")
         
         # [최종 분석 버튼]
-        if st.button("⚡ 이대로 자르고 분석 (Crop & Analyze)", type="primary"):
+        if st.button("⚡ 자르기 및 분석", type="primary"):
             if 'canvas_result' in st.session_state and st.session_state['canvas_result'].json_data:
                 objects = st.session_state['canvas_result'].json_data["objects"]
                 
                 if len(objects) == 0:
-                    st.error("박스가 없습니다. AI 제안을 받거나 직접 그리세요.")
+                    st.error("박스가 없습니다.")
                 else:
                     results = []
                     with st.spinner(f"{len(objects)}개 문제 분석 중..."):
-                        # 좌표 변환 및 자르기
-                        canvas_width = 600
-                        scale = img_w / canvas_width # 원본 / 캔버스 비율
-                        
                         for i, obj in enumerate(objects):
-                            left = int(obj["left"] * scale)
-                            top = int(obj["top"] * scale)
-                            width = int(obj["width"] * scale)
-                            height = int(obj["height"] * scale)
+                            # 캔버스 좌표 -> 원본 좌표 변환
+                            left = int(obj["left"] * scale_factor)
+                            top = int(obj["top"] * scale_factor)
+                            width = int(obj["width"] * scale_factor)
+                            height = int(obj["height"] * scale_factor)
                             
-                            # 자르기 (좌표 보정)
+                            # 원본에서 자르기
                             crop_img = original_img.crop((left, top, left+width, top+height))
                             
                             # AI 분석
@@ -270,94 +274,8 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                     st.session_state['final_results'] = results
 
     with col_canvas:
-        # 캔버스 그리기 (초기값이 있으면 그것으로 시작)
-        canvas_height = int(600 * img_h / img_w)
-        
+        # 캔버스 그리기 (배경은 리사이즈된 이미지 사용)
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_color="#FF0000",
-            background_image=original_img,
-            initial_drawing=st.session_state.get('canvas_init'),
-            update_streamlit=True,
-            height=canvas_height,
-            width=600,
-            drawing_mode="transform", # 수정 모드
-            key=f"canvas_{current_file['id']}"
-        )
-        st.session_state['canvas_result'] = canvas_result
-
-    # ==========================================
-    # Step 2: 결과 확인 및 저장
-    # ==========================================
-    st.divider()
-    
-    if 'final_results' in st.session_state:
-        results = st.session_state['final_results']
-        
-        # 저장 큐
-        save_data_list = []
-        
-        tabs = st.tabs([f"문제 {i+1}" for i in range(len(results))])
-        
-        for i, tab in enumerate(tabs):
-            with tab:
-                item = results[i]
-                c_img, c_info = st.columns([1, 2])
-                
-                with c_img:
-                    st.image(item['img'], caption=f"Crop Result {i+1}")
-                
-                with c_info:
-                    with st.container(border=True):
-                        c1, c2 = st.columns(2)
-                        subj = c1.selectbox("과목", OPTIONS['subject'], key=f"s_{i}")
-                        grd = c2.selectbox("학년", OPTIONS['grade'], key=f"g_{i}")
-                        src = c1.selectbox("출처", OPTIONS['source_org'], key=f"src_{i}")
-                        unt = c2.selectbox("단원", OPTIONS['unit_major'], key=f"u_{i}")
-                        dif = c1.selectbox("난이도", OPTIONS['difficulty'], key=f"d_{i}")
-                        typ = c2.selectbox("유형", OPTIONS['question_type'], key=f"t_{i}")
-                        cpt = st.selectbox("개념", OPTIONS['concepts'], key=f"c_{i}")
-                        
-                        prob = st.text_area("문제", item['data'].get('problem_text', ""), key=f"p_{i}")
-                        desc = st.text_area("설명", item['data'].get('diagram_desc', ""), key=f"d_{i}")
-                        
-                        save_data_list.append({
-                            "img": item['img'],
-                            "meta": {"subject": subj, "grade": grd, "source": src, "unit": unt, "difficulty": dif, "question_type": typ, "concept": cpt},
-                            "content": {"problem": prob, "diagram": desc}
-                        })
-
-        if st.button("💾 전체 저장 및 완료처리 (Save All)", type="primary"):
-            with st.spinner("저장 및 파일 이동 중..."):
-                for idx, data in enumerate(save_data_list):
-                    # 1. 이미지 업로드
-                    ts = int(time.time())
-                    fname = f"{current_file['name'].rsplit('.',1)[0]}_{ts}_{idx}.jpg"
-                    url = upload_image_to_storage(data['img'], fname)
-                    
-                    # 2. DB 저장
-                    doc = {
-                        "original_filename": current_file['name'],
-                        "drive_file_id": current_file['id'],
-                        "problem_index": idx+1,
-                        "image_url": url,
-                        "storage_path": f"cropped_problems/{fname}",
-                        "meta": data['meta'],
-                        "content": data['content'],
-                        "created_at": firestore.SERVER_TIMESTAMP
-                    }
-                    db.collection("math_dataset").add(doc)
-                
-                # 3. 파일 이동
-                if done_folder_id:
-                    move_file_to_done(current_file['id'], folder_id, done_folder_id)
-                    st.toast("작업 완료! 파일이 이동되었습니다.")
-                    time.sleep(1)
-                    st.session_state.pop('final_results', None)
-                    st.session_state.pop('canvas_init', None)
-                    st.rerun()
-                else:
-                    st.success("저장 완료!")
-
-else:
-    st.info("왼쪽 사이드바에서 드라이브를 연결해주세요.")
+            background_image=resized_img, # [변경] 원본 대신 리사이즈된
