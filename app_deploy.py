@@ -125,11 +125,12 @@ with st.sidebar:
     folder_id = st.text_input("Drive Folder ID", placeholder="구글 드라이브 폴더 ID 붙여넣기")
     
     if st.button("⚡ AI 분석", key="ai_btn"):
-    with st.spinner("Analysing..."):
-        # [수정 전] extracted = extract_gemini(api_key, image)
-        # [수정 후] 인자 없이 호출
-        extracted = extract_gemini(image) 
-        st.session_state['extracted'] = extracted
+        with st.spinner("Analysing..."):
+            # [수정 전] extracted = extract_gemini(api_key, image)
+            # [수정 후] 인자 없이 호출
+            extracted = extract_gemini(image) 
+            st.session_state['extracted'] = extracted
+            
 if 'drive_files' in st.session_state and st.session_state['drive_files']:
     files = st.session_state['drive_files']
     idx = st.session_state['idx']
@@ -197,3 +198,4 @@ else:
     `drive.google.com/drive/u/0/folders/` 뒤에 있는 **긴 문자열**입니다.
 
     """)
+
