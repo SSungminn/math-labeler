@@ -9,35 +9,33 @@ import json
 import os
 import google.generativeai as genai
 from PIL import Image
+import time
 
 # ==========================================
-# 1. Configuration & Auth (Secure Way)
+# 1. Configuration & Auth
 # ==========================================
 st.set_page_config(layout="wide", page_title="Cloud Math Labeler")
 
-# 파이어베이스 인증 함수
+# 파이어베이스 인증
 def get_firebase_credentials():
-    # 1. Streamlit Secrets에 설정된 경우 (배포 환경)
     if "firebase" in st.secrets:
         return credentials.Certificate(dict(st.secrets["firebase"]))
-    # 2. 로컬 파일이 있는 경우 (개발 환경)
     elif "serviceAccountKey.json" in [f.name for f in os.scandir('.')]:
         return credentials.Certificate("serviceAccountKey.json")
     else:
         return None
 
-# A. Firebase 초기화 (Singleton)
 if not firebase_admin._apps:
     cred = get_firebase_credentials()
     if cred:
         firebase_admin.initialize_app(cred)
     else:
-        st.error("❌ 인증 키를 찾을 수 없습니다. Streamlit Secrets를 설정해주세요.")
+        st.error("❌ 인증 키를 찾을 수 없습니다.")
         st.stop()
         
 db = firestore.client()
 
-# B. Google Drive API 연결
+# 구글 드라이브 API
 def get_drive_service():
     if "firebase" in st.secrets:
         key_dict = dict(st.secrets["firebase"])
@@ -50,21 +48,26 @@ def get_drive_service():
         )
     return build('drive', 'v3', credentials=creds)
 
-# 옵션 정의
 OPTIONS = {
     "subject": ["수학II", "수학I", "미적분", "확률과통계", "기하", "공통수학"],
     "grade": ["고2", "고1", "고3", "N수", "중등"],
-    "unit_major": ["함수의 극한과 연속", "미분", "적분", "지수/로그", "삼각함수", "수열"],
+    "unit_major": [
+        "함수의 극한과 연속", "미분법", "적분법", 
+        "지수함수와 로그함수", "삼각함수", "수열",
+        "순열과 조합", "확률", "통계",
+        "이차곡선", "평면벡터", "공간도형과 공간좌표",
+        "다항식", "방정식과 부등식", "행렬", "기타"
+    ],
     "difficulty": ["상", "최상(Killer)", "중", "하", "최하"],
     "question_type": ["추론형", "계산형", "이해형", "문제해결형", "합답형"],
-    "source_org": ["평가원", "교육청", "사관학교/경찰대", "EBS", "내신"]
+    "source_org": ["평가원", "교육청", "사관학교/경찰대", "EBS", "내신", "기타"],
+    "concepts": ["샌드위치 정리", "절댓값 함수", "미분계수의 정의", "평균값 정리", "롤의 정리", "사이값 정리", "극대/극소", "변곡점", "정적분 정의", "부분적분", "치환적분", "도함수 활용", "기타"] 
 }
 
 # ==========================================
-# 2. Helper Functions (Drive & AI)
+# 2. Helper Functions
 # ==========================================
 
-# 구글 드라이브 폴더에서 이미지 리스트 가져오기
 def list_drive_images(folder_id):
     try:
         service = get_drive_service()
@@ -75,7 +78,6 @@ def list_drive_images(folder_id):
         st.error(f"드라이브 접근 오류: {e}")
         return []
 
-# 드라이브에서 이미지 다운로드
 def download_image_from_drive(file_id):
     service = get_drive_service()
     request = service.files().get_media(fileId=file_id)
@@ -87,141 +89,172 @@ def download_image_from_drive(file_id):
     file_obj.seek(0)
     return Image.open(file_obj)
 
-# Gemini AI 추출 (입력 인자에서 api_key 제거함 -> 내부에서 Secrets 사용)
 def extract_gemini(image):
-    # Secrets에서 안전하게 키 꺼내기
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
     else:
-        return {"error": "Secrets에 'GEMINI_API_KEY'가 설정되지 않았습니다."}
+        return [{"error": "API Key Missing"}]
 
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         
+        # 프롬프트 강화: 무조건 리스트 형식으로 반환하도록 강제
         prompt = """
-        수학 문제 이미지 분석:
-        1. 수식은 LaTeX($...$)로 변환.
-        2. JSON 포맷: {"problem_text": "...", "diagram_desc": "..."}
+        Analyze this math image. It may contain one or multiple problems.
+        Extract each problem separately.
+        
+        Output format must be a JSON LIST of objects:
+        [
+            {
+                "problem_text": "LaTeX code for problem 1...",
+                "diagram_desc": "Description for problem 1..."
+            },
+            {
+                "problem_text": "LaTeX code for problem 2...",
+                "diagram_desc": "Description for problem 2..."
+            }
+        ]
+        Do not include markdown format like ```json. Just raw JSON.
         """
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # JSON 파싱 (마크다운 제거)
+        # 청소
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
-            
-        return json.loads(text)
+        
+        result = json.loads(text)
+        
+        # 만약 AI가 리스트가 아니라 단일 객체를 줬다면 리스트로 감싸기 (방어 코드)
+        if isinstance(result, dict):
+            return [result]
+        return result
+        
     except Exception as e:
-        return {"error": str(e)}
+        return [{"error": str(e)}]
 
 # ==========================================
 # 3. Main UI
 # ==========================================
-st.title("☁️ Cloud Math Data Labeler")
-st.caption("Storage: Firebase Firestore | Source: Google Drive")
+st.title("☁️ Cloud Math Labeler (Multi-Problem Support)")
 
 with st.sidebar:
     st.header("⚙️ 설정")
-    
-    # [입력창 삭제됨] API Key 입력 부분 없음
-    
-    # 구글 드라이브 폴더 ID 입력
-    # Secrets에 'DEFAULT_FOLDER_ID'가 있다면 기본값으로 사용
     default_folder = st.secrets["DEFAULT_FOLDER_ID"] if "DEFAULT_FOLDER_ID" in st.secrets else ""
-    folder_id = st.text_input("Drive Folder ID", value=default_folder, placeholder="구글 드라이브 폴더 ID 붙여넣기")
+    folder_id = st.text_input("Drive Folder ID", value=default_folder)
     
     if st.button("📂 드라이브 불러오기"):
         if folder_id:
-            with st.spinner("드라이브 스캔 중..."):
+            with st.spinner("스캔 중..."):
                 files = list_drive_images(folder_id)
                 st.session_state['drive_files'] = files
                 st.session_state['idx'] = 0
-                if files:
-                    st.success(f"{len(files)}개 파일 발견!")
-                else:
-                    st.warning("이미지 파일이 없거나 폴더 ID가 잘못되었습니다.")
-        else:
-            st.error("폴더 ID를 입력하세요.")
+                st.success(f"{len(files)}개 파일 발견!")
+    
+    st.markdown("---")
+    # 네비게이션 버튼 (사이드바로 이동)
+    col_prev, col_next = st.columns(2)
+    if col_prev.button("◀ 이전"):
+        if st.session_state.get('idx', 0) > 0:
+            st.session_state['idx'] -= 1
+            if 'extracted' in st.session_state: del st.session_state['extracted']
+            st.rerun()
+            
+    if col_next.button("다음 ▶"):
+        if 'drive_files' in st.session_state and st.session_state['idx'] < len(st.session_state['drive_files']) - 1:
+            st.session_state['idx'] += 1
+            if 'extracted' in st.session_state: del st.session_state['extracted']
+            st.rerun()
 
 if 'drive_files' in st.session_state and st.session_state['drive_files']:
     files = st.session_state['drive_files']
     idx = st.session_state['idx']
-    
-    # 끝까지 다 했는지 체크
-    if idx >= len(files):
-        st.balloons()
-        st.success("🎉 모든 이미지 작업을 완료했습니다!")
-        if st.button("처음으로 돌아가기"):
-            st.session_state['idx'] = 0
-            st.rerun()
-        st.stop()
-        
     current_file = files[idx]
     
-    col1, col2 = st.columns([1, 1.2])
+    # 레이아웃: 위에는 이미지, 아래는 탭(Tab) 형식의 입력폼
+    st.subheader(f"🖼️ ({idx+1}/{len(files)}) {current_file['name']}")
     
-    # [왼쪽] 이미지 표시
-    with col1:
-        st.subheader(f"🖼️ ({idx+1}/{len(files)}) {current_file['name']}")
+    # 1. 이미지 로드 및 AI 버튼
+    col_img_view, col_action = st.columns([2, 1])
+    with col_img_view:
         try:
             image = download_image_from_drive(current_file['id'])
             st.image(image, use_container_width=True)
-            
-            # [수정됨] extract_gemini(image) -> 인자 1개만 전달
-            if st.button("⚡ AI 분석", key="ai_btn"):
-                with st.spinner("Gemini가 문제를 분석 중입니다..."):
-                    extracted = extract_gemini(image)
-                    if "error" in extracted:
-                        st.error(f"오류: {extracted['error']}")
-                    else:
-                        st.session_state['extracted'] = extracted
-                        st.success("분석 완료!")
         except Exception as e:
-            st.error(f"이미지 로드 실패: {e}")
+            st.error("이미지 로드 실패")
 
-    # [오른쪽] 입력 폼
-    with col2:
-        st.subheader("📝 Firebase 저장")
-        ai_data = st.session_state.get('extracted', {})
+    with col_action:
+        st.info("💡 이미지를 보고 AI 분석을 실행하세요.")
+        if st.button("⚡ AI 자동 분석 (Extract)", type="primary"):
+            with st.spinner("문제 추출 중..."):
+                extracted_data = extract_gemini(image)
+                # 결과가 에러인지 확인
+                if isinstance(extracted_data, list) and "error" in extracted_data[0]:
+                    st.error(extracted_data[0]["error"])
+                else:
+                    st.session_state['extracted'] = extracted_data
+                    st.rerun()
+
+    st.divider()
+
+    # 2. 데이터 입력 영역 (탭으로 구분)
+    if 'extracted' in st.session_state:
+        data_list = st.session_state['extracted']
         
-        with st.form("cloud_form"):
-            c1, c2 = st.columns(2)
-            subject = c1.selectbox("과목", OPTIONS['subject'])
-            grade = c2.selectbox("학년", OPTIONS['grade'])
-            
-            c3, c4 = st.columns(2)
-            unit = c3.text_input("단원", value="미분")
-            diff = c4.selectbox("난이도", OPTIONS['difficulty'])
-            
-            prob = st.text_area("문제 (LaTeX)", value=ai_data.get('problem_text', ""), height=150)
-            desc = st.text_area("도형 설명", value=ai_data.get('diagram_desc', ""), height=80)
-            
-            if st.form_submit_button("🔥 Firebase에 저장"):
-                # Firestore 저장 로직
-                doc_data = {
-                    "filename": current_file['name'],
-                    "drive_file_id": current_file['id'],
-                    "meta": {"subject": subject, "grade": grade, "unit": unit, "difficulty": diff},
-                    "content": {"problem": prob, "diagram": desc},
-                    "created_at": firestore.SERVER_TIMESTAMP
-                }
+        # 탭 생성 (문제 개수만큼)
+        tab_names = [f"문제 {i+1}" for i in range(len(data_list))]
+        tabs = st.tabs(tab_names)
+        
+        for i, tab in enumerate(tabs):
+            with tab:
+                item = data_list[i]
+                st.markdown(f"### 📝 문제 {i+1} 상세 입력")
                 
-                # 컬렉션 이름: math_dataset
-                db.collection("math_dataset").add(doc_data)
-                
-                st.toast("저장 완료! 다음 문제로...")
-                time.sleep(0.5)
-                st.session_state['idx'] += 1
-                if 'extracted' in st.session_state:
-                    del st.session_state['extracted']
-                st.rerun()
+                with st.form(f"form_{idx}_{i}"):
+                    # [1열] 기본 정보 (과목, 학년, 출처, 단원)
+                    c1, c2, c3, c4 = st.columns(4)
+                    subject = c1.selectbox("과목", OPTIONS['subject'], key=f"sub_{idx}_{i}")
+                    grade = c2.selectbox("학년", OPTIONS['grade'], key=f"grd_{idx}_{i}")
+                    source = c3.selectbox("출처", OPTIONS['source_org'], key=f"src_{idx}_{i}")
+                    unit = c4.selectbox("단원", OPTIONS['unit_major'], key=f"unt_{idx}_{i}")
+                    
+                    # [2열] 심화 정보 (난이도, 유형, 핵심개념)
+                    c5, c6, c7 = st.columns(3)
+                    diff = c5.selectbox("난이도", OPTIONS['difficulty'], key=f"dif_{idx}_{i}")
+                    q_type = c6.selectbox("유형", OPTIONS['question_type'], key=f"typ_{idx}_{i}")
+                    concept = c7.selectbox("핵심 개념", OPTIONS['concepts'], key=f"cpt_{idx}_{i}")
+                    
+                    st.markdown("---")
+                    
+                    # [텍스트] 문제 본문 & 설명
+                    prob = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=150, key=f"prb_{idx}_{i}")
+                    desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80, key=f"dsc_{idx}_{i}")
+                    
+                    # [저장 버튼]
+                    if st.form_submit_button(f"💾 문제 {i+1} 저장"):
+                        doc_data = {
+                            "filename": current_file['name'],
+                            "drive_file_id": current_file['id'],
+                            "problem_index": i + 1,
+                            "meta": {
+                                "subject": subject, 
+                                "grade": grade, 
+                                "source": source,
+                                "unit": unit, 
+                                "difficulty": diff, 
+                                "question_type": q_type,
+                                "concept": concept  # 새로 추가된 항목
+                            },
+                            "content": {"problem": prob, "diagram": desc},
+                            "created_at": firestore.SERVER_TIMESTAMP
+                        }
+                        
+                        db.collection("math_dataset").add(doc_data)
+                        st.success(f"✅ 문제 {i+1} 저장 완료!")
+                        time.sleep(1)
 
 else:
-    st.info("왼쪽 사이드바에 'Drive Folder ID'를 넣고 불러오세요.")
-    st.markdown("""
-    **Tip:** 폴더 ID는 구글 드라이브 주소창에서 확인 가능합니다.
-    `drive.google.com/drive/u/0/folders/` 뒤에 있는 **긴 문자열**입니다.
-    """)
+    st.info("왼쪽 사이드바에서 드라이브를 불러와주세요.")
