@@ -10,13 +10,13 @@ import os
 import google.generativeai as genai
 from PIL import Image
 import time
-from streamlit_cropper import st_cropper  # 이미지 자르는 도구
+from streamlit_cropper import st_cropper
 
 # ==========================================
-# 0. 사용자 설정 (여기에 복사한 주소 넣기!)
+# 0. 사용자 설정
 # ==========================================
-# 예: "math-problem-collector.appspot.com" (gs://는 빼고 넣으세요)
-BUCKET_NAME = "math-problem-collector.firebasestorage.app" 
+# Bucket Name (gs:// 제외)
+BUCKET_NAME = "math-problem-collector.firebasestorage.app"
 
 # ==========================================
 # 1. Configuration & Auth
@@ -34,26 +34,27 @@ def get_firebase_credentials():
 if not firebase_admin._apps:
     cred = get_firebase_credentials()
     if cred:
-        # Storage 사용을 위해 bucket 설정 추가
-        firebase_admin.initialize_app(cred, {
-            'storageBucket': BUCKET_NAME
-        })
+        firebase_admin.initialize_app(cred, {'storageBucket': BUCKET_NAME})
     else:
         st.error("❌ 인증 키를 찾을 수 없습니다.")
         st.stop()
         
 db = firestore.client()
-bucket = storage.bucket() # 스토리지 버킷 연결
+bucket = storage.bucket()
 
+# [변경됨] 권한 범위가 'drive.readonly'에서 'drive'로 변경됨 (파일 이동을 위해)
 def get_drive_service():
+    # 수정 권한 필요
+    SCOPES = ['https://www.googleapis.com/auth/drive']
+    
     if "firebase" in st.secrets:
         key_dict = dict(st.secrets["firebase"])
         creds = service_account.Credentials.from_service_account_info(
-            key_dict, scopes=['https://www.googleapis.com/auth/drive.readonly']
+            key_dict, scopes=SCOPES
         )
     else:
         creds = service_account.Credentials.from_service_account_file(
-            "serviceAccountKey.json", scopes=['https://www.googleapis.com/auth/drive.readonly']
+            "serviceAccountKey.json", scopes=SCOPES
         )
     return build('drive', 'v3', credentials=creds)
 
@@ -98,17 +99,30 @@ def download_image_from_drive(file_id):
     file_obj.seek(0)
     return Image.open(file_obj)
 
+# [추가됨] 파일을 Done 폴더로 이동시키는 함수
+def move_file_to_done(file_id, current_folder_id, done_folder_id):
+    try:
+        service = get_drive_service()
+        # addParents: 새 폴더 추가, removeParents: 기존 폴더 제거 = 이동
+        service.files().update(
+            fileId=file_id,
+            addParents=done_folder_id,
+            removeParents=current_folder_id,
+            fields='id, parents'
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"파일 이동 실패: {e}")
+        return False
+
 def upload_image_to_storage(image, filename):
-    # 이미지를 바이트로 변환
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='JPEG')
     img_byte_arr = img_byte_arr.getvalue()
-    
-    # Firebase Storage에 업로드
     path = f"cropped_problems/{filename}"
     blob = bucket.blob(path)
     blob.upload_from_string(img_byte_arr, content_type='image/jpeg')
-    blob.make_public() # 공개 URL 생성
+    blob.make_public()
     return blob.public_url
 
 def extract_gemini(image):
@@ -121,7 +135,6 @@ def extract_gemini(image):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         
-        # 이미지가 잘려서 들어오므로, 단일 문제로 인식하게 함
         prompt = """
         Analyze this math problem image.
         1. Convert equations to LaTeX ($...$).
@@ -146,8 +159,13 @@ st.title("✂️ Cloud Math Cropper & Labeler")
 
 with st.sidebar:
     st.header("⚙️ 설정")
+    
+    # Secrets에서 기본값 가져오기
     default_folder = st.secrets["DEFAULT_FOLDER_ID"] if "DEFAULT_FOLDER_ID" in st.secrets else ""
-    folder_id = st.text_input("Drive Folder ID", value=default_folder)
+    done_folder_default = st.secrets["DONE_FOLDER_ID"] if "DONE_FOLDER_ID" in st.secrets else ""
+    
+    folder_id = st.text_input("작업 폴더 ID (Source)", value=default_folder)
+    done_folder_id = st.text_input("완료 폴더 ID (Done)", value=done_folder_default, placeholder="처리 후 이동할 폴더 ID")
     
     if st.button("📂 드라이브 불러오기"):
         if folder_id:
@@ -156,17 +174,18 @@ with st.sidebar:
                 st.session_state['drive_files'] = files
                 st.session_state['idx'] = 0
                 st.success(f"{len(files)}개 파일 발견!")
-    
+
     st.markdown("---")
+    # 파일 이동 버튼은 단순 이동용 (저장 없이)
     col_prev, col_next = st.columns(2)
-    if col_prev.button("◀ 이전 파일"):
+    if col_prev.button("◀ 이전"):
         if st.session_state.get('idx', 0) > 0:
             st.session_state['idx'] -= 1
             if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
             if 'extracted' in st.session_state: del st.session_state['extracted']
             st.rerun()
             
-    if col_next.button("다음 파일 ▶"):
+    if col_next.button("다음 ▶"):
         if 'drive_files' in st.session_state and st.session_state['idx'] < len(st.session_state['drive_files']) - 1:
             st.session_state['idx'] += 1
             if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
@@ -176,17 +195,21 @@ with st.sidebar:
 if 'drive_files' in st.session_state and st.session_state['drive_files']:
     files = st.session_state['drive_files']
     idx = st.session_state['idx']
+    
+    # 인덱스 범위 체크 (이동 후 파일 개수가 줄어들 때 에러 방지)
+    if idx >= len(files):
+        st.session_state['idx'] = 0
+        st.rerun()
+        
     current_file = files[idx]
     
     st.subheader(f"🖼️ 원본: {current_file['name']}")
     
-    # 1. 이미지 로드 및 크롭 도구 표시
     try:
         if 'original_img' not in st.session_state or st.session_state.get('current_file_id') != current_file['id']:
             st.session_state['original_img'] = download_image_from_drive(current_file['id'])
             st.session_state['current_file_id'] = current_file['id']
         
-        # 크롭 UI
         st.info("마우스로 문제 영역을 드래그해서 선택하세요.")
         cropped_img = st_cropper(st.session_state['original_img'], realtime_update=True, box_color='#FF0000', aspect_ratio=None)
         
@@ -199,7 +222,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
             st.markdown("##### ⚡ AI 분석")
             if st.button("선택 영역 분석하기", type="primary"):
                 with st.spinner("자른 이미지 분석 중..."):
-                    st.session_state['cropped_img'] = cropped_img # 저장용으로 세션에 보관
+                    st.session_state['cropped_img'] = cropped_img
                     extracted = extract_gemini(cropped_img)
                     if "error" in extracted:
                         st.error(extracted['error'])
@@ -212,21 +235,18 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
     st.divider()
 
-    # 2. 데이터 입력 및 저장
     if 'extracted' in st.session_state:
         item = st.session_state['extracted']
         
         with st.form("save_form"):
             st.subheader("📝 데이터 확인 및 저장")
             
-            # [1열] 기본 정보
             c1, c2, c3, c4 = st.columns(4)
             subject = c1.selectbox("과목", OPTIONS['subject'])
             grade = c2.selectbox("학년", OPTIONS['grade'])
             source = c3.selectbox("출처", OPTIONS['source_org'])
             unit = c4.selectbox("단원", OPTIONS['unit_major'])
             
-            # [2열] 심화 정보
             c5, c6, c7 = st.columns(3)
             diff = c5.selectbox("난이도", OPTIONS['difficulty'])
             q_type = c6.selectbox("유형", OPTIONS['question_type'])
@@ -236,22 +256,21 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
             prob = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=150)
             desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80)
             
-            if st.form_submit_button("🔥 이미지와 함께 저장"):
+            # 버튼 클릭 로직
+            if st.form_submit_button("🔥 저장 및 이동 (Save & Move)"):
                 if 'cropped_img' in st.session_state:
-                    with st.spinner("이미지 업로드 및 DB 저장 중..."):
-                        # 1. 이미지 이름 생성 (원본이름_시간.jpg)
+                    with st.spinner("1. 이미지 업로드 중..."):
                         timestamp = int(time.time())
                         clean_name = current_file['name'].rsplit('.', 1)[0]
                         img_filename = f"{clean_name}_{timestamp}.jpg"
                         
-                        # 2. Storage에 업로드하고 URL 받기
                         img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
                         
-                        # 3. Firestore에 데이터 저장 (이미지 URL 포함)
+                    with st.spinner("2. 데이터베이스 저장 중..."):
                         doc_data = {
                             "original_filename": current_file['name'],
                             "drive_file_id": current_file['id'],
-                            "image_url": img_url,  # 핵심: 자른 이미지의 링크
+                            "image_url": img_url,
                             "storage_path": f"cropped_problems/{img_filename}",
                             "meta": {
                                 "subject": subject, "grade": grade, "source": source,
@@ -261,12 +280,30 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
                             "content": {"problem": prob, "diagram": desc},
                             "created_at": firestore.SERVER_TIMESTAMP
                         }
-                        
                         db.collection("math_dataset").add(doc_data)
-                        st.toast("저장 성공! 이미지가 클라우드에 안전하게 보관되었습니다.")
+                    
+                    # [핵심] 파일 이동 로직
+                    if done_folder_id:
+                        with st.spinner("3. 완료 폴더로 이동 중..."):
+                            success = move_file_to_done(current_file['id'], folder_id, done_folder_id)
+                            if success:
+                                st.toast("✅ 저장 및 파일 이동 완료!")
+                                time.sleep(1)
+                                # 세션 초기화 및 리로딩
+                                if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
+                                if 'extracted' in st.session_state: del st.session_state['extracted']
+                                st.rerun() # 파일이 사라졌으므로 목록 갱신을 위해 리런
+                            else:
+                                st.error("저장은 됐는데 파일 이동에 실패했습니다.")
+                    else:
+                        st.warning("저장은 완료됐지만 'Done 폴더 ID'가 없어서 파일 이동은 안 했습니다.")
                         time.sleep(1)
+                        if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
+                        if 'extracted' in st.session_state: del st.session_state['extracted']
+                        st.rerun()
+
                 else:
-                    st.error("분석된 이미지가 없습니다. 위에서 '선택 영역 분석하기'를 먼저 눌러주세요.")
+                    st.error("분석된 이미지가 없습니다.")
 
 else:
     st.info("왼쪽 사이드바에서 드라이브를 불러와주세요.")
