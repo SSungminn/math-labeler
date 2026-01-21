@@ -1,6 +1,6 @@
 import streamlit as st
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -10,13 +10,19 @@ import os
 import google.generativeai as genai
 from PIL import Image
 import time
+from streamlit_cropper import st_cropper  # 이미지 자르는 도구
+
+# ==========================================
+# 0. 사용자 설정 (여기에 복사한 주소 넣기!)
+# ==========================================
+# 예: "math-problem-collector.appspot.com" (gs://는 빼고 넣으세요)
+BUCKET_NAME = "math-problem-collector.firebasestorage.app" 
 
 # ==========================================
 # 1. Configuration & Auth
 # ==========================================
 st.set_page_config(layout="wide", page_title="Cloud Math Labeler")
 
-# 파이어베이스 인증
 def get_firebase_credentials():
     if "firebase" in st.secrets:
         return credentials.Certificate(dict(st.secrets["firebase"]))
@@ -28,14 +34,17 @@ def get_firebase_credentials():
 if not firebase_admin._apps:
     cred = get_firebase_credentials()
     if cred:
-        firebase_admin.initialize_app(cred)
+        # Storage 사용을 위해 bucket 설정 추가
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': BUCKET_NAME
+        })
     else:
         st.error("❌ 인증 키를 찾을 수 없습니다.")
         st.stop()
         
 db = firestore.client()
+bucket = storage.bucket() # 스토리지 버킷 연결
 
-# 구글 드라이브 API
 def get_drive_service():
     if "firebase" in st.secrets:
         key_dict = dict(st.secrets["firebase"])
@@ -89,57 +98,51 @@ def download_image_from_drive(file_id):
     file_obj.seek(0)
     return Image.open(file_obj)
 
+def upload_image_to_storage(image, filename):
+    # 이미지를 바이트로 변환
+    img_byte_arr = io.BytesIO()
+    image.save(img_byte_arr, format='JPEG')
+    img_byte_arr = img_byte_arr.getvalue()
+    
+    # Firebase Storage에 업로드
+    path = f"cropped_problems/{filename}"
+    blob = bucket.blob(path)
+    blob.upload_from_string(img_byte_arr, content_type='image/jpeg')
+    blob.make_public() # 공개 URL 생성
+    return blob.public_url
+
 def extract_gemini(image):
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
     else:
-        return [{"error": "API Key Missing"}]
+        return {"error": "API Key Missing"}
 
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
         
-        # 프롬프트 강화: 무조건 리스트 형식으로 반환하도록 강제
+        # 이미지가 잘려서 들어오므로, 단일 문제로 인식하게 함
         prompt = """
-        Analyze this math image. It may contain one or multiple problems.
-        Extract each problem separately.
-        
-        Output format must be a JSON LIST of objects:
-        [
-            {
-                "problem_text": "LaTeX code for problem 1...",
-                "diagram_desc": "Description for problem 1..."
-            },
-            {
-                "problem_text": "LaTeX code for problem 2...",
-                "diagram_desc": "Description for problem 2..."
-            }
-        ]
-        Do not include markdown format like ```json. Just raw JSON.
+        Analyze this math problem image.
+        1. Convert equations to LaTeX ($...$).
+        2. Output JSON: {"problem_text": "...", "diagram_desc": "..."}
         """
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # 청소
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
         
-        result = json.loads(text)
-        
-        # 만약 AI가 리스트가 아니라 단일 객체를 줬다면 리스트로 감싸기 (방어 코드)
-        if isinstance(result, dict):
-            return [result]
-        return result
-        
+        return json.loads(text)
     except Exception as e:
-        return [{"error": str(e)}]
+        return {"error": str(e)}
 
 # ==========================================
 # 3. Main UI
 # ==========================================
-st.title("☁️ Cloud Math Labeler (Multi-Problem Support)")
+st.title("✂️ Cloud Math Cropper & Labeler")
 
 with st.sidebar:
     st.header("⚙️ 설정")
@@ -155,17 +158,18 @@ with st.sidebar:
                 st.success(f"{len(files)}개 파일 발견!")
     
     st.markdown("---")
-    # 네비게이션 버튼 (사이드바로 이동)
     col_prev, col_next = st.columns(2)
-    if col_prev.button("◀ 이전"):
+    if col_prev.button("◀ 이전 파일"):
         if st.session_state.get('idx', 0) > 0:
             st.session_state['idx'] -= 1
+            if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
             if 'extracted' in st.session_state: del st.session_state['extracted']
             st.rerun()
             
-    if col_next.button("다음 ▶"):
+    if col_next.button("다음 파일 ▶"):
         if 'drive_files' in st.session_state and st.session_state['idx'] < len(st.session_state['drive_files']) - 1:
             st.session_state['idx'] += 1
+            if 'cropped_img' in st.session_state: del st.session_state['cropped_img']
             if 'extracted' in st.session_state: del st.session_state['extracted']
             st.rerun()
 
@@ -174,88 +178,95 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
     idx = st.session_state['idx']
     current_file = files[idx]
     
-    # 레이아웃: 위에는 이미지, 아래는 탭(Tab) 형식의 입력폼
-    st.subheader(f"🖼️ ({idx+1}/{len(files)}) {current_file['name']}")
+    st.subheader(f"🖼️ 원본: {current_file['name']}")
     
-    # 1. 이미지 로드 및 AI 버튼
-    col_img_view, col_action = st.columns([2, 1])
-    with col_img_view:
-        try:
-            image = download_image_from_drive(current_file['id'])
-            st.image(image, use_container_width=True)
-        except Exception as e:
-            st.error("이미지 로드 실패")
+    # 1. 이미지 로드 및 크롭 도구 표시
+    try:
+        if 'original_img' not in st.session_state or st.session_state.get('current_file_id') != current_file['id']:
+            st.session_state['original_img'] = download_image_from_drive(current_file['id'])
+            st.session_state['current_file_id'] = current_file['id']
+        
+        # 크롭 UI
+        st.info("마우스로 문제 영역을 드래그해서 선택하세요.")
+        cropped_img = st_cropper(st.session_state['original_img'], realtime_update=True, box_color='#FF0000', aspect_ratio=None)
+        
+        col_c1, col_c2 = st.columns([1, 1])
+        with col_c1:
+            st.markdown("##### ✂️ 선택된 영역 미리보기")
+            st.image(cropped_img, use_container_width=True)
+            
+        with col_c2:
+            st.markdown("##### ⚡ AI 분석")
+            if st.button("선택 영역 분석하기", type="primary"):
+                with st.spinner("자른 이미지 분석 중..."):
+                    st.session_state['cropped_img'] = cropped_img # 저장용으로 세션에 보관
+                    extracted = extract_gemini(cropped_img)
+                    if "error" in extracted:
+                        st.error(extracted['error'])
+                    else:
+                        st.session_state['extracted'] = extracted
+                        st.success("분석 완료!")
 
-    with col_action:
-        st.info("💡 이미지를 보고 AI 분석을 실행하세요.")
-        if st.button("⚡ AI 자동 분석 (Extract)", type="primary"):
-            with st.spinner("문제 추출 중..."):
-                extracted_data = extract_gemini(image)
-                # 결과가 에러인지 확인
-                if isinstance(extracted_data, list) and "error" in extracted_data[0]:
-                    st.error(extracted_data[0]["error"])
-                else:
-                    st.session_state['extracted'] = extracted_data
-                    st.rerun()
+    except Exception as e:
+        st.error(f"이미지 로드 실패: {e}")
 
     st.divider()
 
-    # 2. 데이터 입력 영역 (탭으로 구분)
+    # 2. 데이터 입력 및 저장
     if 'extracted' in st.session_state:
-        data_list = st.session_state['extracted']
+        item = st.session_state['extracted']
         
-        # 탭 생성 (문제 개수만큼)
-        tab_names = [f"문제 {i+1}" for i in range(len(data_list))]
-        tabs = st.tabs(tab_names)
-        
-        for i, tab in enumerate(tabs):
-            with tab:
-                item = data_list[i]
-                st.markdown(f"### 📝 문제 {i+1} 상세 입력")
-                
-                with st.form(f"form_{idx}_{i}"):
-                    # [1열] 기본 정보 (과목, 학년, 출처, 단원)
-                    c1, c2, c3, c4 = st.columns(4)
-                    subject = c1.selectbox("과목", OPTIONS['subject'], key=f"sub_{idx}_{i}")
-                    grade = c2.selectbox("학년", OPTIONS['grade'], key=f"grd_{idx}_{i}")
-                    source = c3.selectbox("출처", OPTIONS['source_org'], key=f"src_{idx}_{i}")
-                    unit = c4.selectbox("단원", OPTIONS['unit_major'], key=f"unt_{idx}_{i}")
-                    
-                    # [2열] 심화 정보 (난이도, 유형, 핵심개념)
-                    c5, c6, c7 = st.columns(3)
-                    diff = c5.selectbox("난이도", OPTIONS['difficulty'], key=f"dif_{idx}_{i}")
-                    q_type = c6.selectbox("유형", OPTIONS['question_type'], key=f"typ_{idx}_{i}")
-                    concept = c7.selectbox("핵심 개념", OPTIONS['concepts'], key=f"cpt_{idx}_{i}")
-                    
-                    st.markdown("---")
-                    
-                    # [텍스트] 문제 본문 & 설명
-                    prob = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=150, key=f"prb_{idx}_{i}")
-                    desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80, key=f"dsc_{idx}_{i}")
-                    
-                    # [저장 버튼]
-                    if st.form_submit_button(f"💾 문제 {i+1} 저장"):
+        with st.form("save_form"):
+            st.subheader("📝 데이터 확인 및 저장")
+            
+            # [1열] 기본 정보
+            c1, c2, c3, c4 = st.columns(4)
+            subject = c1.selectbox("과목", OPTIONS['subject'])
+            grade = c2.selectbox("학년", OPTIONS['grade'])
+            source = c3.selectbox("출처", OPTIONS['source_org'])
+            unit = c4.selectbox("단원", OPTIONS['unit_major'])
+            
+            # [2열] 심화 정보
+            c5, c6, c7 = st.columns(3)
+            diff = c5.selectbox("난이도", OPTIONS['difficulty'])
+            q_type = c6.selectbox("유형", OPTIONS['question_type'])
+            concept = c7.selectbox("핵심 개념", OPTIONS['concepts'])
+            
+            st.markdown("---")
+            prob = st.text_area("문제 (LaTeX)", value=item.get('problem_text', ""), height=150)
+            desc = st.text_area("도형 설명", value=item.get('diagram_desc', ""), height=80)
+            
+            if st.form_submit_button("🔥 이미지와 함께 저장"):
+                if 'cropped_img' in st.session_state:
+                    with st.spinner("이미지 업로드 및 DB 저장 중..."):
+                        # 1. 이미지 이름 생성 (원본이름_시간.jpg)
+                        timestamp = int(time.time())
+                        clean_name = current_file['name'].rsplit('.', 1)[0]
+                        img_filename = f"{clean_name}_{timestamp}.jpg"
+                        
+                        # 2. Storage에 업로드하고 URL 받기
+                        img_url = upload_image_to_storage(st.session_state['cropped_img'], img_filename)
+                        
+                        # 3. Firestore에 데이터 저장 (이미지 URL 포함)
                         doc_data = {
-                            "filename": current_file['name'],
+                            "original_filename": current_file['name'],
                             "drive_file_id": current_file['id'],
-                            "problem_index": i + 1,
+                            "image_url": img_url,  # 핵심: 자른 이미지의 링크
+                            "storage_path": f"cropped_problems/{img_filename}",
                             "meta": {
-                                "subject": subject, 
-                                "grade": grade, 
-                                "source": source,
-                                "unit": unit, 
-                                "difficulty": diff, 
-                                "question_type": q_type,
-                                "concept": concept  # 새로 추가된 항목
+                                "subject": subject, "grade": grade, "source": source,
+                                "unit": unit, "difficulty": diff, "question_type": q_type,
+                                "concept": concept
                             },
                             "content": {"problem": prob, "diagram": desc},
                             "created_at": firestore.SERVER_TIMESTAMP
                         }
                         
                         db.collection("math_dataset").add(doc_data)
-                        st.success(f"✅ 문제 {i+1} 저장 완료!")
+                        st.toast("저장 성공! 이미지가 클라우드에 안전하게 보관되었습니다.")
                         time.sleep(1)
+                else:
+                    st.error("분석된 이미지가 없습니다. 위에서 '선택 영역 분석하기'를 먼저 눌러주세요.")
 
 else:
     st.info("왼쪽 사이드바에서 드라이브를 불러와주세요.")
-
