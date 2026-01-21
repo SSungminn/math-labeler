@@ -169,11 +169,12 @@ def extract_gemini(image):
         # 속도와 비용 효율성을 위해 flash 모델 권장
         model = genai.GenerativeModel("gemini-2.0-flash") 
         
+        # [수정됨] 프롬프트를 한글로 변경하여 한국어 출력을 강제함
         prompt = """
-        Analyze this math problem image.
-        1. Identify the mathematical equations and problem text.
-        2. Describe any diagrams or graphs strictly.
-        3. Return ONLY a valid JSON object with keys: "problem_text" (use LaTeX for math) and "diagram_desc".
+        이 수학 문제 이미지를 분석하세요.
+        1. 수식은 LaTeX 포맷($...$)으로 변환하고, 문제 텍스트는 이미지에 있는 그대로(한국어 포함) 추출하세요.
+        2. 도형이나 그래프에 대한 설명(diagram_desc)은 반드시 '한국어'로 자세히 묘사하세요.
+        3. 결과는 반드시 다음 키를 가진 JSON 객체로만 반환하세요: "problem_text", "diagram_desc".
         """
         
         response = model.generate_content([prompt, image])
