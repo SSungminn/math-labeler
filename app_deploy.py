@@ -258,3 +258,4 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("왼쪽 사이드바에서 드라이브를 불러와주세요.")
+
