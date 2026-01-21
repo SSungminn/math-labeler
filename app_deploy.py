@@ -161,7 +161,9 @@ def upload_image_to_storage(image, filename):
 def extract_gemini(image, options_dict):
     """
     이미지를 분석하여 텍스트, 도형 설명 및 카테고리 분류를 수행합니다.
-    LaTeX 백슬래시로 인한 JSON 파싱 오류를 자동으로 수정하는 로직이 포함되어 있습니다.
+    [기능 개선]
+    1. LaTeX 백슬래시(\) 파싱 오류 자동 수정
+    2. JSON이 리스트([])로 반환될 경우 자동 언패킹
     """
     if "GEMINI_API_KEY" not in st.secrets:
         return {"error": "API Key Missing in Secrets"}
@@ -169,7 +171,6 @@ def extract_gemini(image, options_dict):
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         
-        # JSON 모드 유지
         generation_config = {
             "temperature": 0.1, 
             "response_mime_type": "application/json"
@@ -179,7 +180,6 @@ def extract_gemini(image, options_dict):
         
         options_str = json.dumps(options_dict, ensure_ascii=False, indent=2)
 
-        # 프롬프트는 기존 유지
         prompt = f"""
         당신은 한국의 수학 교육 전문가이자 Python Matplotlib 코딩 전문가입니다.
         제공된 수학 문제 이미지를 분석하여 다음 작업을 수행하고 JSON으로 반환하세요.
@@ -199,7 +199,7 @@ def extract_gemini(image, options_dict):
         - 코드는 `import matplotlib.pyplot as plt`와 `fig, ax = plt.subplots()`를 포함해야 합니다.
         - plt.show()는 절대 사용하지 마세요.
         - **핵심:** LaTeX 수식이 포함된 라벨은 반드시 **Raw String**을 사용해야 합니다.
-          (예: label=r'$y=\\frac{{1}}{{2}}x$') -> r을 안 붙이면 오류가 발생합니다.
+          (예: label=r'$y=\\frac{{1}}{{2}}x$')
         - 줄바꿈은 `\\n`으로 이스케이프 처리하세요.
 
         [작업 4: 자동 분류]
@@ -219,44 +219,45 @@ def extract_gemini(image, options_dict):
         }}
         """
         
-        # 1. 모델 생성 요청
         response = model.generate_content([prompt, image])
         text = response.text
         
-        # [디버깅] 원본 텍스트 확인용
-        print("======== [Gemini Raw Response] ========")
-        print(text)
-        print("=======================================")
-
-        # 2. 마크다운(```json) 제거
+        # 1. 마크다운 제거
         clean_text = re.sub(r"```json|```", "", text).strip()
 
-        # 3. [핵심] JSON 파싱 및 자동 복구 로직
+        parsed_data = None
+
+        # 2. JSON 파싱 시도 (백슬래시 에러 복구 로직 포함)
         try:
-            return json.loads(clean_text)
-        except json.JSONDecodeError as e:
-            # 1차 파싱 실패 시: Invalid Escape 문자만 찾아서 백슬래시를 하나 더 붙임
-            # 설명: JSON 표준 이스케이프 문자(" \ / b f n r t u)가 *아닌* 백슬래시를 찾아서 이중으로 변경
-            # 예: \alpha -> \\alpha, \left -> \\left
+            parsed_data = json.loads(clean_text)
+        except json.JSONDecodeError:
+            # Invalid Escape 문자(\alpha 등)를 \\alpha로 치환하여 재시도
             fixed_text = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', clean_text)
-            
             try:
-                return json.loads(fixed_text)
+                parsed_data = json.loads(fixed_text)
             except json.JSONDecodeError as e2:
-                # 복구도 실패하면 에러 리턴 및 원본 텍스트 반환
                 return {
                     "error": f"JSON Parsing Failed: {str(e2)}", 
                     "problem_text": "", 
                     "diagram_code": "",
                     "raw_text_debug": clean_text
                 }
+
+        # 3. [핵심 수정] 리스트([])로 감싸져서 왔을 경우 껍질 벗기기
+        if isinstance(parsed_data, list):
+            if len(parsed_data) > 0:
+                parsed_data = parsed_data[0] # 첫 번째 요소만 추출
+            else:
+                return {"error": "Empty JSON list returned"}
+        
+        return parsed_data
             
     except Exception as e:
         return {
-            "error": f"Extraction Logic Failed: {str(e)}", 
+            "error": f"Logic Failed: {str(e)}", 
             "problem_text": "", 
             "diagram_code": "",
-            "raw_text_debug": "Error occurred before text generation"
+            "raw_text_debug": "Error before parsing"
         }
 
 def get_index_or_default(options_list, value, default_index=0):
@@ -512,6 +513,7 @@ if 'drive_files' in st.session_state and st.session_state['drive_files']:
 
 else:
     st.info("👈 드라이브 연결 필요")
+
 
 
 
